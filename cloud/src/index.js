@@ -14,6 +14,7 @@ import { handleForwardRaw } from "./handlers/forwardRaw.js";
 import { handleEmbeddings } from "./handlers/embeddings.js";
 import { handleAdmin } from "./handlers/admin.js";
 import { createLandingPageResponse } from "./services/landingPage.js";
+import { setUsageEnv } from "./services/hostedUsage.js";
 
 // Initialize translators at module load (static imports)
 initTranslators();
@@ -38,6 +39,7 @@ const worker = {
   },
 
   async fetch(request, env, ctx) {
+    setUsageEnv(env);
     const startTime = Date.now();
     const url = new URL(request.url);
     let path = url.pathname;
@@ -229,4 +231,3 @@ const worker = {
 };
 
 export default worker;
-

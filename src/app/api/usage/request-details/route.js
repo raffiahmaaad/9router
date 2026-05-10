@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getRequestDetails } from "@/lib/usageDb";
+import { hostedUsageError, proxyHostedUsage, shouldProxyHostedUsage } from "@/lib/hosted/usageProxy";
 
 /**
  * GET /api/usage/request-details
@@ -7,6 +8,10 @@ import { getRequestDetails } from "@/lib/usageDb";
  */
 export async function GET(request) {
   try {
+    if (shouldProxyHostedUsage()) {
+      return proxyHostedUsage("/admin/usage/request-details", request);
+    }
+
     const { searchParams } = new URL(request.url);
     
     const page = parseInt(searchParams.get("page")) || 1;
@@ -48,6 +53,7 @@ export async function GET(request) {
     
     return NextResponse.json(result);
   } catch (error) {
+    if (shouldProxyHostedUsage()) return hostedUsageError(error);
     console.error("[API] Failed to get request details:", error);
     return NextResponse.json(
       { error: "Failed to fetch request details" },

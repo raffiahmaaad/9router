@@ -1,3 +1,12 @@
+import { getUsageForProvider } from "open-sse/services/usage.js";
+import {
+  getChartData,
+  getRecentLogs,
+  getRequestDetails,
+  getUsageProviders,
+  getUsageStats,
+} from "../services/hostedUsage.js";
+
 const SESSION_TTL_SECONDS = 60 * 60 * 24;
 const DEFAULT_SETTINGS = {
   requireLogin: true,
@@ -352,6 +361,39 @@ export async function handleAdmin(request, env) {
       const deleted = await deleteJsonRow(env, "hosted_providers", id);
       if (!deleted) return json({ error: "Connection not found" }, 404);
       return json({ message: "Connection deleted successfully" });
+    }
+  }
+
+  if (url.pathname === "/admin/usage/stats" && request.method === "GET") {
+    return json(await getUsageStats(url.searchParams.get("period") || "7d", env));
+  }
+
+  if (url.pathname === "/admin/usage/chart" && request.method === "GET") {
+    return json(await getChartData(url.searchParams.get("period") || "7d", env));
+  }
+
+  if (url.pathname === "/admin/usage/request-details" && request.method === "GET") {
+    const filter = Object.fromEntries(url.searchParams.entries());
+    return json(await getRequestDetails(filter, env));
+  }
+
+  if (url.pathname === "/admin/usage/providers" && request.method === "GET") {
+    return json(await getUsageProviders(env));
+  }
+
+  if ((url.pathname === "/admin/usage/request-logs" || url.pathname === "/admin/usage/logs") && request.method === "GET") {
+    return json(await getRecentLogs(200, env));
+  }
+
+  if (url.pathname.match(/^\/admin\/usage\/[^/]+$/) && request.method === "GET") {
+    const id = url.pathname.split("/").pop();
+    const connection = await getJsonRow(env, "hosted_providers", id);
+    if (!connection) return json({ error: "Connection not found" }, 404);
+    try {
+      const usage = await getUsageForProvider(connection, { strictProxy: false });
+      return json(usage);
+    } catch (error) {
+      return json({ message: error.message || "Unable to fetch quota for this provider." });
     }
   }
 

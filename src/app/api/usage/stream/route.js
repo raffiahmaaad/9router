@@ -1,9 +1,39 @@
 import { getUsageStats, statsEmitter, getActiveRequests } from "@/lib/usageDb";
+import { callCloudAdmin } from "@/lib/hosted/cloudClient";
+import { isHostedMode } from "@/lib/runtimeMode";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   const encoder = new TextEncoder();
+
+  if (isHostedMode()) {
+    const stream = new ReadableStream({
+      async start(controller) {
+        try {
+          const stats = await callCloudAdmin("/admin/usage/stats", { method: "GET" });
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(stats)}\n\n`));
+          controller.enqueue(encoder.encode(": ping\n\n"));
+        } catch {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+            pending: { byModel: {}, byAccount: {} },
+            activeRequests: [],
+            recentRequests: [],
+            errorProvider: "",
+          })}\n\n`));
+        }
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
+    });
+  }
+
   const state = { closed: false, keepalive: null, send: null, sendPending: null, cachedStats: null };
 
   const stream = new ReadableStream({

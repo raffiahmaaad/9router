@@ -2,13 +2,18 @@ import { NextResponse } from "next/server";
 import { getRequestDetails } from "@/lib/requestDetailsDb";
 import { getProviderNodes } from "@/lib/localDb";
 import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
+import { hostedUsageError, proxyHostedUsage, shouldProxyHostedUsage } from "@/lib/hosted/usageProxy";
 
 /**
  * GET /api/usage/providers
  * Returns list of unique providers from request details
  */
-export async function GET() {
+export async function GET(request) {
   try {
+    if (shouldProxyHostedUsage()) {
+      return proxyHostedUsage("/admin/usage/providers", request);
+    }
+
     const { details } = await getRequestDetails({ pageSize: 9999 });
 
     // Extract unique providers
@@ -33,6 +38,7 @@ export async function GET() {
 
     return NextResponse.json({ providers });
   } catch (error) {
+    if (shouldProxyHostedUsage()) return hostedUsageError(error);
     console.error("[API] Failed to get providers:", error);
     return NextResponse.json(
       { error: "Failed to fetch providers" },

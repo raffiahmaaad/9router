@@ -6,6 +6,8 @@ import { getUsageForProvider } from "open-sse/services/usage.js";
 import { getExecutor } from "open-sse/executors/index.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
+import { callCloudAdmin, cloudAdminErrorResponse } from "@/lib/hosted/cloudClient";
+import { isHostedMode } from "@/lib/runtimeMode";
 
 // Detect auth-expired messages returned by usage providers instead of throwing
 const AUTH_EXPIRED_PATTERNS = ["expired", "authentication", "unauthorized", "401", "re-authorize"];
@@ -107,6 +109,10 @@ export async function GET(request, { params }) {
   try {
     const { connectionId } = await params;
 
+    if (isHostedMode()) {
+      const usage = await callCloudAdmin(`/admin/usage/${encodeURIComponent(connectionId)}`, { method: "GET" });
+      return Response.json(usage);
+    }
 
     // Get connection from database
     connection = await getProviderConnectionById(connectionId);
@@ -164,6 +170,7 @@ export async function GET(request, { params }) {
 
     return Response.json(usage);
   } catch (error) {
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     const provider = connection?.provider ?? "unknown";
     console.warn(`[Usage] ${provider}: ${error.message}`);
     return Response.json({ error: error.message }, { status: 500 });

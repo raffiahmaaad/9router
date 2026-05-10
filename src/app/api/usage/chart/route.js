@@ -1,10 +1,15 @@
 import { NextResponse } from "next/server";
 import { getChartData } from "@/lib/usageDb";
+import { hostedUsageError, proxyHostedUsage, shouldProxyHostedUsage } from "@/lib/hosted/usageProxy";
 
 const VALID_PERIODS = new Set(["24h", "7d", "30d", "60d"]);
 
 export async function GET(request) {
   try {
+    if (shouldProxyHostedUsage()) {
+      return proxyHostedUsage("/admin/usage/chart", request);
+    }
+
     const { searchParams } = new URL(request.url);
     const period = searchParams.get("period") || "7d";
 
@@ -15,6 +20,7 @@ export async function GET(request) {
     const data = await getChartData(period);
     return NextResponse.json(data);
   } catch (error) {
+    if (shouldProxyHostedUsage()) return hostedUsageError(error);
     console.error("[API] Failed to get chart data:", error);
     return NextResponse.json({ error: "Failed to fetch chart data" }, { status: 500 });
   }

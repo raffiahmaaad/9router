@@ -64,7 +64,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       setError(err.message);
       setStep("error");
     }
-  }, [authData, provider, onSuccess]);
+  }, [authData, provider, onSuccess, oauthMeta]);
 
   // Poll for device code token
   const startPolling = useCallback(async (deviceCode, codeVerifier, interval, extraData) => {
@@ -170,14 +170,12 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         return;
       }
 
-      // Authorization code flow - build redirect URI (some providers require fixed ports)
+      // Authorization code flow - build redirect URI (some providers require fixed ports locally)
       const appPort = window.location.port || (window.location.protocol === "https:" ? "443" : "80");
-      let redirectUri;
-      if (provider === "codex") {
-        redirectUri = "http://localhost:1455/auth/callback";
-      } else {
-        redirectUri = `http://localhost:${appPort}/callback`;
-      }
+      const hostedRedirectUri = `${window.location.origin}/callback`;
+      const redirectUri = isLocalhost
+        ? (provider === "codex" ? "http://localhost:1455/auth/callback" : `http://localhost:${appPort}/callback`)
+        : hostedRedirectUri;
 
       // Build authorize URL first to get codeVerifier/state for codex server-side mode
       const authorizeUrl = new URL(`/api/oauth/${provider}/authorize`, window.location.origin);
@@ -192,7 +190,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       // Codex: start proxy with server-side session (auto-exchange) + fallback to channels
       let codexProxyActive = false;
       let codexServerSide = false;
-      if (provider === "codex") {
+      if (provider === "codex" && isLocalhost) {
         try {
           const proxyUrl = new URL(`/api/oauth/codex/start-proxy`, window.location.origin);
           proxyUrl.searchParams.set("app_port", appPort);
@@ -220,7 +218,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       } else if (!isLocalhost || provider === "codex") {
         // Non-localhost or proxy failed: manual input mode
         setStep("input");
-        window.open(data.authUrl, "_blank");
+        window.open(data.authUrl, "_blank", "noopener,noreferrer");
       } else {
         // Localhost (non-Codex): Open popup and wait for message
         setStep("waiting");
@@ -413,6 +411,9 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
   if (!provider || !providerInfo) return null;
   const deviceLoginUrl = deviceData?.verification_uri_complete || deviceData?.verification_uri || "";
+  const waitingLabel = isLocalhost
+    ? "Waiting for popup authorization..."
+    : "Open the authorization URL, then paste the callback URL here.";
 
   return (
     <Modal isOpen={isOpen} title={`Connect ${providerInfo.name}`} onClose={handleClose} size="lg">
@@ -425,7 +426,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
               <span className="material-symbols-outlined text-base text-primary animate-spin">
                 progress_activity
               </span>
-              <span className="text-sm">Waiting for popup authorization…</span>
+              <span className="text-sm">{waitingLabel}</span>
             </div>
 
             {/* Divider */}
@@ -441,6 +442,9 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
                 <p className="text-sm font-medium mb-2">Step 1: Open this URL in your browser</p>
                 <div className="flex gap-2">
                   <Input value={authData?.authUrl || ""} readOnly className="flex-1 font-mono text-xs" />
+                  <Button variant="secondary" icon="open_in_new" onClick={() => window.open(authData?.authUrl, "_blank", "noopener,noreferrer")} disabled={!authData?.authUrl}>
+                    Open
+                  </Button>
                   <Button variant="secondary" icon={copied === "auth_url" ? "check" : "content_copy"} onClick={() => copy(authData?.authUrl, "auth_url")} disabled={!authData?.authUrl}>
                     Copy
                   </Button>

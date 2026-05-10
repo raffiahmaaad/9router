@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getUsageStats } from "@/lib/usageDb";
+import { hostedUsageError, proxyHostedUsage, shouldProxyHostedUsage } from "@/lib/hosted/usageProxy";
 
 const VALID_PERIODS = new Set(["24h", "7d", "30d", "60d", "all"]);
 
@@ -7,6 +8,10 @@ export const dynamic = "force-dynamic";
 
 export async function GET(request) {
   try {
+    if (shouldProxyHostedUsage()) {
+      return proxyHostedUsage("/admin/usage/stats", request);
+    }
+
     const { searchParams } = new URL(request.url);
     const period = searchParams.get("period") || "7d";
 
@@ -17,6 +22,7 @@ export async function GET(request) {
     const stats = await getUsageStats(period);
     return NextResponse.json(stats);
   } catch (error) {
+    if (shouldProxyHostedUsage()) return hostedUsageError(error);
     console.error("[API] Failed to get usage stats:", error);
     return NextResponse.json({ error: "Failed to fetch usage stats" }, { status: 500 });
   }

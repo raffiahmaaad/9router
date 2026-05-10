@@ -7,6 +7,8 @@ import {
   pollForToken 
 } from "@/lib/oauth/providers";
 import { createProviderConnection } from "@/models";
+import { callCloudAdmin, cloudAdminErrorResponse } from "@/lib/hosted/cloudClient";
+import { isHostedMode } from "@/lib/runtimeMode";
 import {
   startCodexProxy,
   stopCodexProxy,
@@ -126,6 +128,28 @@ export async function GET(request, { params }) {
 
 // POST /api/oauth/[provider]/exchange - Exchange code for tokens and save
 // POST /api/oauth/[provider]/poll - Poll for token (device_code flow)
+function buildConnectionPayload(provider, tokenData) {
+  return {
+    provider,
+    authType: "oauth",
+    ...tokenData,
+    expiresAt: tokenData.expiresIn
+      ? new Date(Date.now() + tokenData.expiresIn * 1000).toISOString()
+      : null,
+    isActive: true,
+    testStatus: "active",
+  };
+}
+
+function publicConnection(connection) {
+  return {
+    id: connection.id,
+    provider: connection.provider,
+    email: connection.email,
+    displayName: connection.displayName,
+  };
+}
+
 export async function POST(request, { params }) {
   try {
     const { provider, action } = await params;
@@ -147,26 +171,26 @@ export async function POST(request, { params }) {
 
       // Exchange code for tokens (meta carries provider-specific params, e.g. gitlab clientId/baseUrl)
       const tokenData = await exchangeTokens(provider, code, redirectUri, codeVerifier, state, meta);
+      const payload = buildConnectionPayload(provider, tokenData);
+
+      if (isHostedMode()) {
+        const result = await callCloudAdmin("/admin/providers", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+
+        return NextResponse.json({
+          success: true,
+          connection: publicConnection(result.connection || payload),
+        });
+      }
 
       // Save to database
-      const connection = await createProviderConnection({
-        provider,
-        authType: "oauth",
-        ...tokenData,
-        expiresAt: tokenData.expiresIn 
-          ? new Date(Date.now() + tokenData.expiresIn * 1000).toISOString() 
-          : null,
-        testStatus: "active",
-      });
+      const connection = await createProviderConnection(payload);
 
       return NextResponse.json({ 
         success: true, 
-        connection: {
-          id: connection.id,
-          provider: connection.provider,
-          email: connection.email,
-          displayName: connection.displayName,
-        }
+        connection: publicConnection(connection)
       });
     }
 
@@ -194,16 +218,22 @@ export async function POST(request, { params }) {
       }
 
       if (result.success) {
+        const payload = buildConnectionPayload(provider, result.tokens);
+
+        if (isHostedMode()) {
+          const saved = await callCloudAdmin("/admin/providers", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+
+          return NextResponse.json({
+            success: true,
+            connection: publicConnection(saved.connection || payload),
+          });
+        }
+
         // Save to database
-        const connection = await createProviderConnection({
-          provider,
-          authType: "oauth",
-          ...result.tokens,
-          expiresAt: result.tokens.expiresIn 
-            ? new Date(Date.now() + result.tokens.expiresIn * 1000).toISOString() 
-            : null,
-          testStatus: "active",
-        });
+        const connection = await createProviderConnection(payload);
 
         return NextResponse.json({ 
           success: true, 
@@ -227,6 +257,7 @@ export async function POST(request, { params }) {
 
     return NextResponse.json({ error: "Unknown action" }, { status: 400 });
   } catch (error) {
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     console.log("OAuth POST error:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
