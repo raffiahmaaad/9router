@@ -98,16 +98,6 @@ export async function POST(request) {
       });
     }
 
-    const hasChoices = Array.isArray(parsed?.choices) && parsed.choices.length > 0;
-    if (!hasChoices) {
-      return NextResponse.json({
-        ok: false,
-        latencyMs,
-        status: res.status,
-        error: "Provider returned no completion choices for this model",
-      });
-    }
-
     return NextResponse.json({ ok: true, latencyMs, error: null, status: res.status });
   } catch (err) {
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 });
