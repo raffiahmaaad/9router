@@ -15,6 +15,13 @@ const assistantSessionMap = new Map();
 let cachedMachineId = null;
 getConsistentMachineId().then(id => { cachedMachineId = id; });
 
+function cleanupExpiredAssistantSessions() {
+  const now = Date.now();
+  for (const [key, entry] of assistantSessionMap) {
+    if (now - entry.lastUsed > SESSION_TTL_MS) assistantSessionMap.delete(key);
+  }
+}
+
 function hashContent(text) {
   return createHash("sha256").update(text).digest("hex").slice(0, 16);
 }
@@ -35,6 +42,7 @@ function extractItemText(item) {
 
 // Resolve session_id from first assistant message + machineId to avoid cross-user collision
 function resolveConversationSessionId(input, machineId) {
+  cleanupExpiredAssistantSessions();
   const machineSessionId = machineId ? `sess_${hashContent(machineId)}` : generateSessionId();
   if (!Array.isArray(input) || input.length === 0) return machineSessionId;
 
@@ -60,14 +68,6 @@ function resolveConversationSessionId(input, machineId) {
   assistantSessionMap.set(hash, { sessionId, lastUsed: Date.now() });
   return sessionId;
 }
-
-// Cleanup expired entries periodically
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, entry] of assistantSessionMap) {
-    if (now - entry.lastUsed > SESSION_TTL_MS) assistantSessionMap.delete(key);
-  }
-}, 10 * 60 * 1000);
 
 /**
  * Codex Executor - handles OpenAI Codex API (Responses API format)

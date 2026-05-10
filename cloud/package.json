@@ -9,9 +9,10 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
-    "open-sse": "file:../open-sse"
+    "open-sse": "file:../open-sse",
+    "uuid": "^13.0.0"
   },
   "devDependencies": {
-    "wrangler": "^3.0.0"
+    "wrangler": "^4.90.0"
   }
 }

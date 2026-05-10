@@ -14,18 +14,19 @@ import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
 // Runtime storage: Key = connectionId, Value = { sessionId, lastUsed }
 const runtimeSessionStore = new Map();
 
-// Periodically evict entries that haven't been used within TTL
-const cleanupInterval = setInterval(() => {
-    const now = Date.now();
-    for (const [key, entry] of runtimeSessionStore) {
-        if (now - entry.lastUsed > MEMORY_CONFIG.sessionTtlMs) {
-            runtimeSessionStore.delete(key);
-        }
+function cleanupExpiredSessions() {
+  const now = Date.now();
+  for (const [key, entry] of runtimeSessionStore) {
+    if (now - entry.lastUsed > MEMORY_CONFIG.sessionTtlMs) {
+      runtimeSessionStore.delete(key);
     }
-}, MEMORY_CONFIG.sessionCleanupIntervalMs);
+  }
+}
 
-// Allow Node.js to exit even if interval is still active
-if (cleanupInterval.unref) cleanupInterval.unref();
+if (typeof process !== "undefined" && process.release?.name === "node") {
+  const cleanupInterval = setInterval(cleanupExpiredSessions, MEMORY_CONFIG.sessionCleanupIntervalMs);
+  if (cleanupInterval.unref) cleanupInterval.unref();
+}
 
 /**
  * Get or create a session ID for the given connection.
@@ -42,26 +43,27 @@ if (cleanupInterval.unref) cleanupInterval.unref();
  * @returns {string} A stable session ID string matching binary format
  */
 export function deriveSessionId(connectionId) {
-    if (!connectionId) {
-        return generateBinaryStyleId();
-    }
+  cleanupExpiredSessions();
 
-    const existing = runtimeSessionStore.get(connectionId);
-    if (existing) {
-        existing.lastUsed = Date.now();
-        return existing.sessionId;
-    }
+  if (!connectionId) {
+    return generateBinaryStyleId();
+  }
 
-    // Evict oldest entry if store exceeds max size (safety cap between cleanup cycles)
-    const MAX_SESSIONS = 1000;
-    if (runtimeSessionStore.size >= MAX_SESSIONS) {
-      const oldest = runtimeSessionStore.keys().next().value;
-      runtimeSessionStore.delete(oldest);
-    }
+  const existing = runtimeSessionStore.get(connectionId);
+  if (existing) {
+    existing.lastUsed = Date.now();
+    return existing.sessionId;
+  }
 
-    const sessionId = generateBinaryStyleId();
-    runtimeSessionStore.set(connectionId, { sessionId, lastUsed: Date.now() });
-    return sessionId;
+  const MAX_SESSIONS = 1000;
+  if (runtimeSessionStore.size >= MAX_SESSIONS) {
+    const oldest = runtimeSessionStore.keys().next().value;
+    runtimeSessionStore.delete(oldest);
+  }
+
+  const sessionId = generateBinaryStyleId();
+  runtimeSessionStore.set(connectionId, { sessionId, lastUsed: Date.now() });
+  return sessionId;
 }
 
 /**
@@ -71,12 +73,12 @@ export function deriveSessionId(connectionId) {
  * @returns {string} A session ID in binary format
  */
 export function generateBinaryStyleId() {
-    return crypto.randomUUID() + Date.now().toString();
+  return crypto.randomUUID() + Date.now().toString();
 }
 
 /**
  * Clears all session IDs (e.g. useful for testing or explicit reset)
  */
 export function clearSessionStore() {
-    runtimeSessionStore.clear();
+  runtimeSessionStore.clear();
 }

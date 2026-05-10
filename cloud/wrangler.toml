@@ -5,13 +5,14 @@ compatibility_flags = ["nodejs_compat"]
 
 [alias]
 "@/lib/usageDb.js" = "./src/stubs/usageDb.js"
+"node-machine-id" = "./src/stubs/nodeMachineId.js"
 
 # Step 3: Paste your KV & D1 IDs here
 [[kv_namespaces]]
 binding = "KV"
-id = "YOUR_KV_NAMESPACE_ID"
+id = "9ac7440e5624407591ae3469248cc75d"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "proxy-db"
-database_id = "YOUR_D1_DATABASE_ID"
+database_id = "6ffb28e6-e1ac-44a6-9ac3-d575746ca3d0"
