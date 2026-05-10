@@ -1,15 +1,23 @@
 import { NextResponse } from "next/server";
 import { getModelAliases, setModelAlias, deleteModelAlias } from "@/models";
+import { callCloudAdmin, cloudAdminErrorResponse } from "@/lib/hosted/cloudClient";
+import { isHostedMode } from "@/lib/runtimeMode";
 
 export const dynamic = "force-dynamic";
 
 // GET /api/models/alias - Get all aliases
 export async function GET() {
   try {
+    if (isHostedMode()) {
+      const data = await callCloudAdmin("/admin/models/alias", { method: "GET" });
+      return NextResponse.json({ aliases: data.aliases || {} });
+    }
+
     const aliases = await getModelAliases();
     return NextResponse.json({ aliases });
   } catch (error) {
     console.log("Error fetching aliases:", error);
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     return NextResponse.json({ error: "Failed to fetch aliases" }, { status: 500 });
   }
 }
@@ -24,11 +32,20 @@ export async function PUT(request) {
       return NextResponse.json({ error: "Model and alias required" }, { status: 400 });
     }
 
+    if (isHostedMode()) {
+      const data = await callCloudAdmin("/admin/models/alias", {
+        method: "PUT",
+        body: JSON.stringify({ model, alias }),
+      });
+      return NextResponse.json(data);
+    }
+
     await setModelAlias(alias, model);
 
     return NextResponse.json({ success: true, model, alias });
   } catch (error) {
     console.log("Error updating alias:", error);
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     return NextResponse.json({ error: "Failed to update alias" }, { status: 500 });
   }
 }
@@ -43,11 +60,19 @@ export async function DELETE(request) {
       return NextResponse.json({ error: "Alias required" }, { status: 400 });
     }
 
+    if (isHostedMode()) {
+      const data = await callCloudAdmin(`/admin/models/alias?alias=${encodeURIComponent(alias)}`, {
+        method: "DELETE",
+      });
+      return NextResponse.json(data);
+    }
+
     await deleteModelAlias(alias);
 
     return NextResponse.json({ success: true });
   } catch (error) {
     console.log("Error deleting alias:", error);
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     return NextResponse.json({ error: "Failed to delete alias" }, { status: 500 });
   }
 }

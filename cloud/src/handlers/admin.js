@@ -88,13 +88,16 @@ function generateId(prefix = "") {
 }
 
 async function createApiKey(name) {
+  const machineId = "hosted";
+  const keyId = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+  const crc = await sha256(`${machineId}${keyId}`);
   const id = generateId("key_");
-  const token = `sk_9router_${crypto.randomUUID().replaceAll("-", "")}`;
+  const token = `sk-${machineId}-${keyId}-${crc.slice(0, 8)}`;
   return {
     id,
     name,
     key: token,
-    machineId: "hosted",
+    machineId,
     isActive: true,
     createdAt: getUpdatedAt(),
   };
@@ -117,6 +120,17 @@ async function getHostedSettings(env) {
   const row = await readRecord(env, "hosted_settings", "dashboard");
   if (!row) return { ...DEFAULT_SETTINGS };
   return { ...DEFAULT_SETTINGS, ...JSON.parse(row.value) };
+}
+
+async function getHostedModelAliases(env) {
+  const row = await readRecord(env, "hosted_settings", "modelAliases");
+  if (!row) return {};
+  return JSON.parse(row.value);
+}
+
+async function saveHostedModelAliases(env, aliases) {
+  await writeRecord(env, "hosted_settings", "modelAliases", JSON.stringify(aliases || {}));
+  return aliases || {};
 }
 
 async function saveHostedSettings(env, patch) {
@@ -203,6 +217,35 @@ export async function handleAdmin(request, env) {
     }
     const settings = await saveHostedSettings(env, body);
     return json({ ...settings, hasPassword: !!(await getHostedAuth(env))?.passwordHash });
+  }
+
+  if (url.pathname === "/admin/models/alias" && request.method === "GET") {
+    return json({ aliases: await getHostedModelAliases(env) });
+  }
+
+  if (url.pathname === "/admin/models/alias" && request.method === "PUT") {
+    const { model, alias } = await request.json();
+    if (!model || !alias) return json({ error: "Model and alias required" }, 400);
+
+    const aliases = await getHostedModelAliases(env);
+    const existingModel = aliases[alias];
+    if (existingModel && existingModel !== model) {
+      return json({ error: `Alias '${alias}' already in use for model '${existingModel}'` }, 400);
+    }
+
+    aliases[alias] = model;
+    await saveHostedModelAliases(env, aliases);
+    return json({ success: true, model, alias });
+  }
+
+  if (url.pathname === "/admin/models/alias" && request.method === "DELETE") {
+    const alias = url.searchParams.get("alias");
+    if (!alias) return json({ error: "Alias required" }, 400);
+
+    const aliases = await getHostedModelAliases(env);
+    delete aliases[alias];
+    await saveHostedModelAliases(env, aliases);
+    return json({ success: true });
   }
 
   if (url.pathname === "/admin/api-keys" && request.method === "GET") {

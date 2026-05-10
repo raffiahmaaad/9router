@@ -1,5 +1,5 @@
-import { callCloudWithMachineId } from "@/shared/utils/cloud.js";
 import { handleChat } from "@/sse/handlers/chat.js";
+import { isHostedMode, requireHostedEnv } from "@/lib/runtimeMode";
 import { initTranslators } from "open-sse/translator/index.js";
 
 let initialized = false;
@@ -28,9 +28,23 @@ export async function OPTIONS() {
 }
 
 export async function POST(request) {  
+  if (isHostedMode()) {
+    const cloudUrl = requireHostedEnv("CLOUD_URL").replace(/\/+$/, "");
+    const body = await request.text();
+    const headers = new Headers(request.headers);
+    headers.set("content-type", headers.get("content-type") || "application/json");
+    headers.delete("host");
+
+    return fetch(`${cloudUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers,
+      body,
+      cache: "no-store",
+    });
+  }
+
   // Fallback to local handling
   await ensureInitialized();
   
   return await handleChat(request);
 }
-

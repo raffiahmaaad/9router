@@ -11,9 +11,64 @@ import { parseApiKey, extractBearerToken } from "../utils/apiKey.js";
 import { getMachineData, saveMachineData } from "../services/storage.js";
 
 const TOKEN_EXPIRY_BUFFER_MS = 5 * 60 * 1000;
+const HOSTED_MACHINE_ID = "hosted";
+const NO_AUTH_PROVIDERS = new Set(["opencode", "oc"]);
+const PROVIDER_ALIASES = {
+  oc: "opencode",
+};
+
+function resolveProviderId(provider) {
+  return PROVIDER_ALIASES[provider] || provider;
+}
+
+async function listHostedRows(env, table) {
+  const { results } = await env.DB.prepare(`SELECT data FROM ${table} ORDER BY updatedAt DESC`).all();
+  return (results || []).map((row) => JSON.parse(row.data));
+}
+
+async function getHostedModelAliases(env) {
+  const row = await env.DB.prepare("SELECT value FROM hosted_settings WHERE key = ?").bind("modelAliases").first();
+  if (!row) return {};
+  return JSON.parse(row.value);
+}
+
+async function getHostedData(env) {
+  const providers = {};
+  for (const provider of await listHostedRows(env, "hosted_providers")) {
+    providers[provider.id] = provider;
+  }
+
+  return {
+    providers,
+    modelAliases: await getHostedModelAliases(env),
+    apiKeys: await listHostedRows(env, "hosted_api_keys"),
+    combos: [],
+  };
+}
+
+async function getRoutingData(machineId, env) {
+  if (machineId === HOSTED_MACHINE_ID) return getHostedData(env);
+  return getMachineData(machineId, env);
+}
+
+async function isHostedApiKey(apiKey, env) {
+  const keys = await listHostedRows(env, "hosted_api_keys");
+  return keys.some((key) => key.key === apiKey && key.isActive !== false);
+}
+
+async function updateHostedProvider(connectionId, updates, env) {
+  const row = await env.DB.prepare("SELECT data FROM hosted_providers WHERE id = ?").bind(connectionId).first();
+  if (!row) return;
+
+  const updatedAt = new Date().toISOString();
+  const next = { ...JSON.parse(row.data), ...updates, updatedAt };
+  await env.DB.prepare(
+    "INSERT INTO hosted_providers (id, data, updatedAt) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET data = ?, updatedAt = ?"
+  ).bind(connectionId, JSON.stringify(next), updatedAt, JSON.stringify(next), updatedAt).run();
+}
 
 async function getModelInfo(modelStr, machineId, env) {
-  const data = await getMachineData(machineId, env);
+  const data = await getRoutingData(machineId, env);
   return getModelInfoCore(modelStr, data?.modelAliases || {});
 }
 
@@ -44,13 +99,25 @@ export async function handleChat(request, env, ctx, machineIdOverride = null) {
     if (!apiKey) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
     
     const parsed = await parseApiKey(apiKey);
-    if (!parsed) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key format");
-    
-    if (!parsed.isNewFormat || !parsed.machineId) {
-      return errorResponse(HTTP_STATUS.BAD_REQUEST, "API key does not contain machineId. Use /{machineId}/v1/... endpoint for old format keys.");
+    if (!parsed) {
+      if (await isHostedApiKey(apiKey, env)) {
+        machineId = HOSTED_MACHINE_ID;
+      } else {
+        return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key format");
+      }
     }
     
-    machineId = parsed.machineId;
+    if (!machineId && (!parsed.isNewFormat || !parsed.machineId)) {
+      if (await isHostedApiKey(apiKey, env)) {
+        machineId = HOSTED_MACHINE_ID;
+      } else {
+        return errorResponse(HTTP_STATUS.BAD_REQUEST, "API key does not contain machineId. Use /{machineId}/v1/... endpoint for old format keys.");
+      }
+    }
+
+    if (!machineId) {
+      machineId = parsed.machineId;
+    }
   }
 
   if (!await validateApiKey(request, machineId, env)) {
@@ -70,7 +137,7 @@ export async function handleChat(request, env, ctx, machineIdOverride = null) {
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
 
   // Check if model is a combo
-  const data = await getMachineData(machineId, env);
+  const data = await getRoutingData(machineId, env);
   const comboModels = getComboModelsFromData(modelStr, data?.combos || []);
   
   if (comboModels) {
@@ -160,7 +227,6 @@ async function handleSingleModelChat(body, modelStr, machineId, env) {
     return result.response;
   }
 }
-
 async function checkAndRefreshToken(machineId, provider, credentials, env) {
   if (!credentials.expiresAt) return credentials;
 
@@ -190,17 +256,26 @@ async function validateApiKey(request, machineId, env) {
   if (!authHeader?.startsWith("Bearer ")) return false;
 
   const apiKey = authHeader.slice(7);
-  const data = await getMachineData(machineId, env);
+  const data = await getRoutingData(machineId, env);
   return data?.apiKeys?.some(k => k.key === apiKey) || false;
 }
 
 async function getProviderCredentials(machineId, provider, env, excludeConnectionId = null) {
-  const data = await getMachineData(machineId, env);
+  const providerId = resolveProviderId(provider);
+  if (NO_AUTH_PROVIDERS.has(providerId)) {
+    return {
+      id: "noauth",
+      accessToken: "public",
+      providerSpecificData: {},
+    };
+  }
+
+  const data = await getRoutingData(machineId, env);
   if (!data?.providers) return null;
 
   const providerConnections = Object.entries(data.providers)
     .filter(([connId, conn]) => {
-      if (conn.provider !== provider || !conn.isActive) return false;
+      if (resolveProviderId(conn.provider) !== providerId || !conn.isActive) return false;
       if (excludeConnectionId && connId === excludeConnectionId) return false;
       if (isAccountUnavailable(conn.rateLimitedUntil)) return false;
       return true;
@@ -210,7 +285,7 @@ async function getProviderCredentials(machineId, provider, env, excludeConnectio
   if (providerConnections.length === 0) {
     // Check if accounts exist but all rate limited
     const allConnections = Object.entries(data.providers)
-      .filter(([, conn]) => conn.provider === provider && conn.isActive)
+      .filter(([, conn]) => resolveProviderId(conn.provider) === providerId && conn.isActive)
       .map(([, conn]) => conn);
     const earliest = getEarliestRateLimitedUntil(allConnections);
     if (earliest) {
@@ -246,7 +321,9 @@ async function getProviderCredentials(machineId, provider, env, excludeConnectio
 }
 
 async function markAccountUnavailable(machineId, connectionId, status, errorText, env, resetsAtMs = null) {
-  const data = await getMachineData(machineId, env);
+  if (!connectionId || connectionId === "noauth") return;
+
+  const data = await getRoutingData(machineId, env);
   if (!data?.providers?.[connectionId]) return;
 
   const conn = data.providers[connectionId];
@@ -270,7 +347,11 @@ async function markAccountUnavailable(machineId, connectionId, status, errorText
   data.providers[connectionId].backoffLevel = newBackoffLevel ?? backoffLevel;
   data.providers[connectionId].updatedAt = new Date().toISOString();
 
-  await saveMachineData(machineId, data, env);
+  if (machineId === HOSTED_MACHINE_ID) {
+    await updateHostedProvider(connectionId, data.providers[connectionId], env);
+  } else {
+    await saveMachineData(machineId, data, env);
+  }
   log.warn("ACCOUNT", `${connectionId} | unavailable until ${rateLimitedUntil} (backoff=${newBackoffLevel ?? backoffLevel})`);
 }
 
@@ -282,7 +363,9 @@ async function clearAccountError(machineId, connectionId, currentCredentials, en
   
   if (!hasError) return; // Skip if already clean
 
-  const data = await getMachineData(machineId, env);
+  if (!connectionId || connectionId === "noauth") return;
+
+  const data = await getRoutingData(machineId, env);
   if (!data?.providers?.[connectionId]) return;
 
   data.providers[connectionId].status = "active";
@@ -292,12 +375,18 @@ async function clearAccountError(machineId, connectionId, currentCredentials, en
   data.providers[connectionId].backoffLevel = 0;
   data.providers[connectionId].updatedAt = new Date().toISOString();
 
-  await saveMachineData(machineId, data, env);
+  if (machineId === HOSTED_MACHINE_ID) {
+    await updateHostedProvider(connectionId, data.providers[connectionId], env);
+  } else {
+    await saveMachineData(machineId, data, env);
+  }
   log.info("ACCOUNT", `${connectionId} | error cleared`);
 }
 
 async function updateCredentials(machineId, connectionId, newCredentials, env) {
-  const data = await getMachineData(machineId, env);
+  if (!connectionId || connectionId === "noauth") return;
+
+  const data = await getRoutingData(machineId, env);
   if (!data?.providers?.[connectionId]) return;
 
   data.providers[connectionId].accessToken = newCredentials.accessToken;
@@ -308,6 +397,10 @@ async function updateCredentials(machineId, connectionId, newCredentials, env) {
   }
   data.providers[connectionId].updatedAt = new Date().toISOString();
 
-  await saveMachineData(machineId, data, env);
+  if (machineId === HOSTED_MACHINE_ID) {
+    await updateHostedProvider(connectionId, data.providers[connectionId], env);
+  } else {
+    await saveMachineData(machineId, data, env);
+  }
   log.debug("TOKEN", `credentials updated | ${connectionId}`);
 }
