@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCombos, createCombo, getComboByName } from "@/lib/localDb";
+import { callCloudAdmin, cloudAdminErrorResponse } from "@/lib/hosted/cloudClient";
+import { isHostedMode } from "@/lib/runtimeMode";
 
 export const dynamic = "force-dynamic";
 
@@ -9,9 +11,15 @@ const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
 // GET /api/combos - Get all combos
 export async function GET() {
   try {
+    if (isHostedMode()) {
+      const data = await callCloudAdmin("/admin/combos", { method: "GET" });
+      return NextResponse.json({ combos: data.combos || [] });
+    }
+
     const combos = await getCombos();
     return NextResponse.json({ combos });
   } catch (error) {
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     console.log("Error fetching combos:", error);
     return NextResponse.json({ error: "Failed to fetch combos" }, { status: 500 });
   }
@@ -32,6 +40,18 @@ export async function POST(request) {
       return NextResponse.json({ error: "Name can only contain letters, numbers, -, _ and ." }, { status: 400 });
     }
 
+    if (isHostedMode()) {
+      const existing = await callCloudAdmin("/admin/combos", { method: "GET" });
+      if ((existing.combos || []).some((combo) => combo.name === name)) {
+        return NextResponse.json({ error: "Combo name already exists" }, { status: 400 });
+      }
+      const combo = await callCloudAdmin("/admin/combos", {
+        method: "POST",
+        body: JSON.stringify({ name, models: models || [], kind: kind || null }),
+      });
+      return NextResponse.json(combo, { status: 201 });
+    }
+
     // Check if name already exists
     const existing = await getComboByName(name);
     if (existing) {
@@ -42,6 +62,7 @@ export async function POST(request) {
 
     return NextResponse.json(combo, { status: 201 });
   } catch (error) {
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     console.log("Error creating combo:", error);
     return NextResponse.json({ error: "Failed to create combo" }, { status: 500 });
   }

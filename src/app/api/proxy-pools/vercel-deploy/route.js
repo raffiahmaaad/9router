@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { createProxyPool } from "@/models";
+import { callCloudAdmin, cloudAdminErrorResponse } from "@/lib/hosted/cloudClient";
+import { isHostedMode } from "@/lib/runtimeMode";
 
 const VERCEL_API = "https://api.vercel.com";
 
@@ -125,17 +127,24 @@ export async function POST(request) {
     const deployUrl = `https://${ready.url}`;
 
     // Create proxy pool entry with type vercel
-    const proxyPool = await createProxyPool({
+    const proxyPoolPayload = {
       name: projectName,
       proxyUrl: deployUrl,
       type: "vercel",
       noProxy: "",
       isActive: true,
       strictProxy: false,
-    });
+    };
+    const proxyPool = isHostedMode()
+      ? (await callCloudAdmin("/admin/proxy-pools", {
+          method: "POST",
+          body: JSON.stringify(proxyPoolPayload),
+        })).proxyPool
+      : await createProxyPool(proxyPoolPayload);
 
     return NextResponse.json({ proxyPool, deployUrl }, { status: 201 });
   } catch (error) {
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     console.log("Error deploying Vercel relay:", error);
     return NextResponse.json({ error: error.message || "Deploy failed" }, { status: 500 });
   }

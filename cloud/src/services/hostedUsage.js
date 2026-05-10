@@ -50,7 +50,7 @@ async function ensureSchema(env = usageEnv) {
   const current = getEnv(env);
   if (schemaReady) return current;
 
-  await current.DB.exec(`
+  await current.DB.prepare(`
     CREATE TABLE IF NOT EXISTS hosted_usage_history (
       id TEXT PRIMARY KEY,
       timestamp TEXT NOT NULL,
@@ -65,9 +65,17 @@ async function ensureSchema(env = usageEnv) {
       status TEXT,
       tokens TEXT,
       meta TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_hosted_usage_timestamp ON hosted_usage_history(timestamp);
-    CREATE INDEX IF NOT EXISTS idx_hosted_usage_provider ON hosted_usage_history(provider);
+    )
+  `).run();
+
+  await current.DB.prepare(
+    "CREATE INDEX IF NOT EXISTS idx_hosted_usage_timestamp ON hosted_usage_history(timestamp)"
+  ).run();
+  await current.DB.prepare(
+    "CREATE INDEX IF NOT EXISTS idx_hosted_usage_provider ON hosted_usage_history(provider)"
+  ).run();
+
+  await current.DB.prepare(`
     CREATE TABLE IF NOT EXISTS hosted_request_details (
       id TEXT PRIMARY KEY,
       timestamp TEXT NOT NULL,
@@ -76,9 +84,12 @@ async function ensureSchema(env = usageEnv) {
       connectionId TEXT,
       status TEXT,
       data TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_hosted_request_details_timestamp ON hosted_request_details(timestamp);
-  `);
+    )
+  `).run();
+
+  await current.DB.prepare(
+    "CREATE INDEX IF NOT EXISTS idx_hosted_request_details_timestamp ON hosted_request_details(timestamp)"
+  ).run();
 
   schemaReady = true;
   return current;

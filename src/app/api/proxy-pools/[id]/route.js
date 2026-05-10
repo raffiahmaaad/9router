@@ -5,6 +5,8 @@ import {
   getProxyPoolById,
   updateProxyPool,
 } from "@/models";
+import { callCloudAdmin, cloudAdminErrorResponse } from "@/lib/hosted/cloudClient";
+import { isHostedMode } from "@/lib/runtimeMode";
 
 function normalizeProxyPoolUpdate(body = {}) {
   const updates = {};
@@ -53,7 +55,9 @@ function countBoundConnections(connections = [], proxyPoolId) {
 export async function GET(request, { params }) {
   try {
     const { id } = await params;
-    const proxyPool = await getProxyPoolById(id);
+    const proxyPool = isHostedMode()
+      ? (await callCloudAdmin(`/admin/proxy-pools/${id}`, { method: "GET" })).proxyPool
+      : await getProxyPoolById(id);
 
     if (!proxyPool) {
       return NextResponse.json({ error: "Proxy pool not found" }, { status: 404 });
@@ -61,6 +65,7 @@ export async function GET(request, { params }) {
 
     return NextResponse.json({ proxyPool });
   } catch (error) {
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     console.log("Error fetching proxy pool:", error);
     return NextResponse.json({ error: "Failed to fetch proxy pool" }, { status: 500 });
   }
@@ -70,7 +75,9 @@ export async function GET(request, { params }) {
 export async function PUT(request, { params }) {
   try {
     const { id } = await params;
-    const existing = await getProxyPoolById(id);
+    const existing = isHostedMode()
+      ? (await callCloudAdmin(`/admin/proxy-pools/${id}`, { method: "GET" })).proxyPool
+      : await getProxyPoolById(id);
 
     if (!existing) {
       return NextResponse.json({ error: "Proxy pool not found" }, { status: 404 });
@@ -83,9 +90,15 @@ export async function PUT(request, { params }) {
       return NextResponse.json({ error: normalized.error }, { status: 400 });
     }
 
-    const updated = await updateProxyPool(id, normalized.updates);
+    const updated = isHostedMode()
+      ? (await callCloudAdmin(`/admin/proxy-pools/${id}`, {
+          method: "PUT",
+          body: JSON.stringify(normalized.updates),
+        })).proxyPool
+      : await updateProxyPool(id, normalized.updates);
     return NextResponse.json({ proxyPool: updated });
   } catch (error) {
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     console.log("Error updating proxy pool:", error);
     return NextResponse.json({ error: "Failed to update proxy pool" }, { status: 500 });
   }
@@ -95,13 +108,17 @@ export async function PUT(request, { params }) {
 export async function DELETE(request, { params }) {
   try {
     const { id } = await params;
-    const existing = await getProxyPoolById(id);
+    const existing = isHostedMode()
+      ? (await callCloudAdmin(`/admin/proxy-pools/${id}`, { method: "GET" })).proxyPool
+      : await getProxyPoolById(id);
 
     if (!existing) {
       return NextResponse.json({ error: "Proxy pool not found" }, { status: 404 });
     }
 
-    const connections = await getProviderConnections();
+    const connections = isHostedMode()
+      ? ((await callCloudAdmin("/admin/providers", { method: "GET" })).connections || [])
+      : await getProviderConnections();
     const boundConnectionCount = countBoundConnections(connections, id);
 
     if (boundConnectionCount > 0) {
@@ -114,9 +131,14 @@ export async function DELETE(request, { params }) {
       );
     }
 
-    await deleteProxyPool(id);
+    if (isHostedMode()) {
+      await callCloudAdmin(`/admin/proxy-pools/${id}`, { method: "DELETE" });
+    } else {
+      await deleteProxyPool(id);
+    }
     return NextResponse.json({ success: true });
   } catch (error) {
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     console.log("Error deleting proxy pool:", error);
     return NextResponse.json({ error: "Failed to delete proxy pool" }, { status: 500 });
   }

@@ -83,6 +83,29 @@ async function deleteJsonRow(env, table, id) {
   return result.meta?.changes > 0;
 }
 
+let hostedCollectionsReady = false;
+
+async function ensureHostedCollectionsSchema(env) {
+  if (hostedCollectionsReady) return;
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS hosted_combos (
+      id TEXT PRIMARY KEY,
+      data TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS hosted_proxy_pools (
+      id TEXT PRIMARY KEY,
+      data TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    )
+  `).run();
+  await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_hosted_combos_updatedAt ON hosted_combos(updatedAt)").run();
+  await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_hosted_proxy_pools_updatedAt ON hosted_proxy_pools(updatedAt)").run();
+  hostedCollectionsReady = true;
+}
+
 function stripProviderSecrets(connection) {
   const result = { ...connection };
   delete result.apiKey;
@@ -184,6 +207,7 @@ export async function handleAdmin(request, env) {
   const url = new URL(request.url);
   const authError = await verifyAdminRequest(request, env);
   if (authError) return authError;
+  await ensureHostedCollectionsSchema(env);
 
   if (url.pathname === "/admin/auth/login" && request.method === "POST") {
     const { password } = await request.json();
@@ -341,6 +365,68 @@ export async function handleAdmin(request, env) {
       testStatus: body.testStatus || "unknown",
     });
     return json({ connection: stripProviderSecrets(connection) }, 201);
+  }
+
+  if (url.pathname === "/admin/combos" && request.method === "GET") {
+    return json({ combos: await listJsonRows(env, "hosted_combos") });
+  }
+
+  if (url.pathname === "/admin/combos" && request.method === "POST") {
+    const body = await request.json();
+    const combo = await upsertJsonRow(env, "hosted_combos", body.id || generateId("combo_"), body);
+    return json(combo, 201);
+  }
+
+  if (url.pathname.match(/^\/admin\/combos\/[^/]+$/)) {
+    const id = url.pathname.split("/").pop();
+    if (request.method === "GET") {
+      const combo = await getJsonRow(env, "hosted_combos", id);
+      if (!combo) return json({ error: "Combo not found" }, 404);
+      return json(combo);
+    }
+    if (request.method === "PUT") {
+      const existing = await getJsonRow(env, "hosted_combos", id);
+      if (!existing) return json({ error: "Combo not found" }, 404);
+      const body = await request.json();
+      const combo = await upsertJsonRow(env, "hosted_combos", id, { ...existing, ...body });
+      return json(combo);
+    }
+    if (request.method === "DELETE") {
+      const deleted = await deleteJsonRow(env, "hosted_combos", id);
+      if (!deleted) return json({ error: "Combo not found" }, 404);
+      return json({ success: true });
+    }
+  }
+
+  if (url.pathname === "/admin/proxy-pools" && request.method === "GET") {
+    return json({ proxyPools: await listJsonRows(env, "hosted_proxy_pools") });
+  }
+
+  if (url.pathname === "/admin/proxy-pools" && request.method === "POST") {
+    const body = await request.json();
+    const proxyPool = await upsertJsonRow(env, "hosted_proxy_pools", body.id || generateId("proxy_"), body);
+    return json({ proxyPool }, 201);
+  }
+
+  if (url.pathname.match(/^\/admin\/proxy-pools\/[^/]+$/)) {
+    const id = url.pathname.split("/").pop();
+    if (request.method === "GET") {
+      const proxyPool = await getJsonRow(env, "hosted_proxy_pools", id);
+      if (!proxyPool) return json({ error: "Proxy pool not found" }, 404);
+      return json({ proxyPool });
+    }
+    if (request.method === "PUT") {
+      const existing = await getJsonRow(env, "hosted_proxy_pools", id);
+      if (!existing) return json({ error: "Proxy pool not found" }, 404);
+      const body = await request.json();
+      const proxyPool = await upsertJsonRow(env, "hosted_proxy_pools", id, { ...existing, ...body });
+      return json({ proxyPool });
+    }
+    if (request.method === "DELETE") {
+      const deleted = await deleteJsonRow(env, "hosted_proxy_pools", id);
+      if (!deleted) return json({ error: "Proxy pool not found" }, 404);
+      return json({ success: true });
+    }
   }
 
   if (url.pathname.match(/^\/admin\/providers\/[^/]+$/)) {
