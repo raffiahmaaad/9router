@@ -1,14 +1,64 @@
 import { NextResponse } from "next/server";
-import {
-  getProviderConnections,
-  createProviderConnection,
-  getProviderNodeById,
-  getProviderNodes,
-  getProxyPoolById,
-} from "@/models";
 import { APIKEY_PROVIDERS } from "@/shared/constants/config";
 import { AI_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { normalizeProviderId, normalizeProviderSpecificData } from "@/lib/providerNormalization";
+import { isHostedMode } from "@/lib/runtimeMode";
+import { callCloudAdmin, cloudAdminErrorResponse } from "@/lib/hosted/cloudClient";
+
+async function getModelsModule() {
+  return import("@/models");
+}
+
+async function getLocalDbModule() {
+  return import("@/lib/localDb");
+}
+
+async function getProxyPoolById(proxyPoolId) {
+  return (await getModelsModule()).getProxyPoolById(proxyPoolId);
+}
+
+async function getProviderNodeById(id) {
+  return (await getModelsModule()).getProviderNodeById(id);
+}
+
+async function getProviderNodes() {
+  return (await getModelsModule()).getProviderNodes();
+}
+
+async function getProviderConnections(filter) {
+  return (await getModelsModule()).getProviderConnections(filter);
+}
+
+async function createProviderConnection(data) {
+  return (await getModelsModule()).createProviderConnection(data);
+}
+
+async function getHostedProviderNodesMap() {
+  const data = await callCloudAdmin("/admin/provider-nodes", { method: "GET" });
+  return Object.fromEntries((data.nodes || []).filter((node) => node.id && node.name).map((node) => [node.id, node.name]));
+}
+
+async function getHostedProviderNodeById(id) {
+  const data = await callCloudAdmin("/admin/provider-nodes", { method: "GET" });
+  return (data.nodes || []).find((node) => node.id === id) || null;
+}
+
+async function getHostedProviderConnections(provider) {
+  const data = await callCloudAdmin("/admin/providers", { method: "GET" });
+  const connections = data.connections || [];
+  return provider ? connections.filter((connection) => connection.provider === provider) : connections;
+}
+
+async function createHostedProviderConnection(data) {
+  return (await callCloudAdmin("/admin/providers", {
+    method: "POST",
+    body: JSON.stringify(data),
+  })).connection;
+}
+
+async function getHostedProxyPoolById() {
+  return null;
+}
 
 export const dynamic = "force-dynamic";
 
@@ -38,7 +88,9 @@ async function normalizeProxyPoolId(proxyPoolId) {
     return { proxyPoolId: null };
   }
 
-  const proxyPool = await getProxyPoolById(normalizedId);
+  const proxyPool = isHostedMode()
+    ? await getHostedProxyPoolById(normalizedId)
+    : await getProxyPoolById(normalizedId);
   if (!proxyPool) {
     return { error: "Proxy pool not found" };
   }
@@ -49,14 +101,19 @@ async function normalizeProxyPoolId(proxyPoolId) {
 // GET /api/providers - List all connections
 export async function GET() {
   try {
-    const connections = await getProviderConnections();
+    const connections = isHostedMode()
+      ? await getHostedProviderConnections()
+      : await getProviderConnections();
 
-    // Build nodeNameMap for compatible providers (id → name)
     let nodeNameMap = {};
     try {
-      const nodes = await getProviderNodes();
-      for (const node of nodes) {
-        if (node.id && node.name) nodeNameMap[node.id] = node.name;
+      if (isHostedMode()) {
+        nodeNameMap = await getHostedProviderNodesMap();
+      } else {
+        const nodes = await getProviderNodes();
+        for (const node of nodes) {
+          if (node.id && node.name) nodeNameMap[node.id] = node.name;
+        }
       }
     } catch { }
 
@@ -79,6 +136,7 @@ export async function GET() {
     return NextResponse.json({ connections: safeConnections });
   } catch (error) {
     console.log("Error fetching providers:", error);
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     return NextResponse.json({ error: "Failed to fetch providers" }, { status: 500 });
   }
 }
@@ -123,12 +181,16 @@ export async function POST(request) {
     let providerSpecificData = normalizeProviderSpecificData(provider, body, body.providerSpecificData);
 
     if (isOpenAICompatibleProvider(provider)) {
-      const node = await getProviderNodeById(provider);
+      const node = isHostedMode()
+        ? await getHostedProviderNodeById(provider)
+        : await getProviderNodeById(provider);
       if (!node) {
         return NextResponse.json({ error: "OpenAI Compatible node not found" }, { status: 404 });
       }
 
-      const existingConnections = await getProviderConnections({ provider });
+      const existingConnections = isHostedMode()
+        ? await getHostedProviderConnections(provider)
+        : await getProviderConnections({ provider });
       if (existingConnections.length > 0) {
         return NextResponse.json({ error: "Only one connection is allowed for this OpenAI Compatible node" }, { status: 400 });
       }
@@ -140,12 +202,16 @@ export async function POST(request) {
         nodeName: node.name,
       };
     } else if (isAnthropicCompatibleProvider(provider)) {
-      const node = await getProviderNodeById(provider);
+      const node = isHostedMode()
+        ? await getHostedProviderNodeById(provider)
+        : await getProviderNodeById(provider);
       if (!node) {
         return NextResponse.json({ error: "Anthropic Compatible node not found" }, { status: 404 });
       }
 
-      const existingConnections = await getProviderConnections({ provider });
+      const existingConnections = isHostedMode()
+        ? await getHostedProviderConnections(provider)
+        : await getProviderConnections({ provider });
       if (existingConnections.length > 0) {
         return NextResponse.json({ error: "Only one connection is allowed for this Anthropic Compatible node" }, { status: 400 });
       }
@@ -156,12 +222,16 @@ export async function POST(request) {
         nodeName: node.name,
       };
     } else if (isCustomEmbeddingProvider(provider)) {
-      const node = await getProviderNodeById(provider);
+      const node = isHostedMode()
+        ? await getHostedProviderNodeById(provider)
+        : await getProviderNodeById(provider);
       if (!node) {
         return NextResponse.json({ error: "Custom Embedding node not found" }, { status: 404 });
       }
 
-      const existingConnections = await getProviderConnections({ provider });
+      const existingConnections = isHostedMode()
+        ? await getHostedProviderConnections(provider)
+        : await getProviderConnections({ provider });
       if (existingConnections.length > 0) {
         return NextResponse.json({ error: "Only one connection is allowed for this Custom Embedding node" }, { status: 400 });
       }
@@ -184,7 +254,7 @@ export async function POST(request) {
       mergedProviderSpecificData.proxyPoolId = proxyPoolId;
     }
 
-    const newConnection = await createProviderConnection({
+    const connectionPayload = {
       provider,
       authType: isWebCookieProvider ? "cookie" : "apikey",
       name: connectionName,
@@ -195,7 +265,11 @@ export async function POST(request) {
       providerSpecificData: mergedProviderSpecificData,
       isActive: true,
       testStatus: testStatus || "unknown",
-    });
+    };
+
+    const newConnection = isHostedMode()
+      ? await createHostedProviderConnection(connectionPayload)
+      : await createProviderConnection(connectionPayload);
 
     // Hide sensitive fields
     const result = { ...newConnection };
@@ -204,6 +278,7 @@ export async function POST(request) {
     return NextResponse.json({ connection: result }, { status: 201 });
   } catch (error) {
     console.log("Error creating provider:", error);
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     return NextResponse.json({ error: "Failed to create provider" }, { status: 500 });
   }
 }

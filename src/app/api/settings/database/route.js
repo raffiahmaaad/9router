@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
-import { exportDb, getSettings, importDb } from "@/lib/localDb";
-import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
+import { isLocalOnlyBlocked, localOnlyResponse } from "@/lib/localOnly";
 
 export async function GET() {
+  if (isLocalOnlyBlocked()) return localOnlyResponse();
+
   try {
+    const { exportDb } = await import("@/lib/localDb");
     const payload = await exportDb();
     return NextResponse.json(payload);
   } catch (error) {
@@ -13,7 +15,13 @@ export async function GET() {
 }
 
 export async function POST(request) {
+  if (isLocalOnlyBlocked()) return localOnlyResponse();
+
   try {
+    const [{ importDb, getSettings }, { applyOutboundProxyEnv }] = await Promise.all([
+      import("@/lib/localDb"),
+      import("@/lib/network/outboundProxy"),
+    ]);
     const payload = await request.json();
     await importDb(payload);
 

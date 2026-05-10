@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { jwtVerify } from "jose";
-import { getSettings } from "@/lib/localDb";
-import { getConsistentMachineId } from "@/shared/utils/machineId";
+import { isHostedMode } from "@/lib/runtimeMode";
 
 const SECRET = new TextEncoder().encode(
   process.env.JWT_SECRET || "9router-default-secret-change-me"
@@ -12,7 +11,10 @@ const CLI_TOKEN_SALT = "9r-cli-auth";
 
 let cachedCliToken = null;
 async function getCliToken() {
-  if (!cachedCliToken) cachedCliToken = await getConsistentMachineId(CLI_TOKEN_SALT);
+  if (!cachedCliToken) {
+    const { getConsistentMachineId } = await import("@/shared/utils/machineId");
+    cachedCliToken = await getConsistentMachineId(CLI_TOKEN_SALT);
+  }
   return cachedCliToken;
 }
 
@@ -49,7 +51,9 @@ async function hasValidToken(request) {
 
 // Read settings directly from DB to avoid self-fetch deadlock in proxy
 async function loadSettings() {
+  if (isHostedMode()) return null;
   try {
+    const { getSettings } = await import("@/lib/localDb");
     return await getSettings();
   } catch {
     return null;
@@ -65,6 +69,25 @@ async function isAuthenticated(request) {
 
 export async function proxy(request) {
   const { pathname } = request.nextUrl;
+
+  if (isHostedMode()) {
+    if (pathname.startsWith("/dashboard")) {
+      const token = request.cookies.get("auth_token")?.value;
+      if (!token) return NextResponse.redirect(new URL("/login", request.url));
+      try {
+        await jwtVerify(token, SECRET);
+        return NextResponse.next();
+      } catch {
+        return NextResponse.redirect(new URL("/login", request.url));
+      }
+    }
+
+    if (pathname === "/") {
+      return NextResponse.redirect(new URL("/dashboard", request.url));
+    }
+
+    return NextResponse.next();
+  }
 
   // Always protected - require valid JWT or local CLI token (machineId-based)
   if (ALWAYS_PROTECTED.some((p) => pathname.startsWith(p))) {

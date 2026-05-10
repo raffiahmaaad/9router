@@ -1,12 +1,21 @@
 "use server";
 
 import { NextResponse } from "next/server";
-import { getMitmAlias, setMitmAliasAll } from "@/models";
-import { getMitmStatus } from "@/mitm/manager";
+import { isLocalOnlyBlocked, localOnlyResponse } from "@/lib/localOnly";
 
-// GET - Get MITM aliases for a tool
+async function loadLocalMitmAliasDeps() {
+  const [models, manager] = await Promise.all([
+    import("@/models"),
+    import("@/mitm/manager"),
+  ]);
+  return { ...models, ...manager };
+}
+
 export async function GET(request) {
+  if (isLocalOnlyBlocked()) return localOnlyResponse();
+
   try {
+    const { getMitmAlias } = await loadLocalMitmAliasDeps();
     const { searchParams } = new URL(request.url);
     const toolName = searchParams.get("tool");
     const aliases = await getMitmAlias(toolName || undefined);
@@ -17,16 +26,17 @@ export async function GET(request) {
   }
 }
 
-// PUT - Save MITM aliases for a specific tool
 export async function PUT(request) {
+  if (isLocalOnlyBlocked()) return localOnlyResponse();
+
   try {
+    const { getMitmStatus, setMitmAliasAll } = await loadLocalMitmAliasDeps();
     const { tool, mappings } = await request.json();
 
     if (!tool || !mappings || typeof mappings !== "object") {
       return NextResponse.json({ error: "tool and mappings required" }, { status: 400 });
     }
 
-    // Check if DNS is enabled for this tool
     const status = await getMitmStatus();
     if (!status.dnsStatus || !status.dnsStatus[tool]) {
       return NextResponse.json(
@@ -37,9 +47,7 @@ export async function PUT(request) {
 
     const filtered = {};
     for (const [alias, model] of Object.entries(mappings)) {
-      if (model && model.trim()) {
-        filtered[alias] = model.trim();
-      }
+      if (model && model.trim()) filtered[alias] = model.trim();
     }
 
     await setMitmAliasAll(tool, filtered);

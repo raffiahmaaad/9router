@@ -12,6 +12,7 @@ import { handleVerify } from "./handlers/verify.js";
 import { handleForward } from "./handlers/forward.js";
 import { handleForwardRaw } from "./handlers/forwardRaw.js";
 import { handleEmbeddings } from "./handlers/embeddings.js";
+import { handleAdmin } from "./handlers/admin.js";
 import { createLandingPageResponse } from "./services/landingPage.js";
 
 // Initialize translators at module load (static imports)
@@ -84,6 +85,12 @@ const worker = {
         return new Response(JSON.stringify(ollamaModels), {
           headers: { "Content-Type": "application/json" }
         });
+      }
+
+      if (path.startsWith("/admin/")) {
+        const response = await handleAdmin(request, env);
+        log.response(response.status, Date.now() - startTime);
+        return response;
       }
 
       if (path === "/cache/clear" && request.method === "POST") {

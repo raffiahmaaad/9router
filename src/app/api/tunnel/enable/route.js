@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
-import { enableTunnel } from "@/lib/tunnel/tunnelManager";
+import { isLocalOnlyBlocked, localOnlyResponse } from "@/lib/localOnly";
 
 const DNS_WARMUP_DELAY_MS = 8000;
 
 export async function POST() {
+  if (isLocalOnlyBlocked()) return localOnlyResponse();
+
   try {
+    const { enableTunnel } = await import("@/lib/tunnel/tunnelManager");
     const result = await enableTunnel();
-    // Wait for DNS warmup to propagate at Cloudflare edge after tunnel registered
     await new Promise((r) => setTimeout(r, DNS_WARMUP_DELAY_MS));
     return NextResponse.json(result);
   } catch (error) {

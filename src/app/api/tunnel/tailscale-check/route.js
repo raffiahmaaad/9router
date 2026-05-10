@@ -2,7 +2,7 @@ import os from "os";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { NextResponse } from "next/server";
-import { isTailscaleInstalled, isTailscaleLoggedIn, TAILSCALE_SOCKET } from "@/lib/tunnel/tailscale";
+import { isLocalOnlyBlocked, localOnlyResponse } from "@/lib/localOnly";
 
 const execAsync = promisify(exec);
 const EXTENDED_PATH = `/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${process.env.PATH || ""}`;
@@ -12,30 +12,37 @@ async function hasBrew() {
   try {
     await execAsync("which brew", { windowsHide: true, env: { ...process.env, PATH: EXTENDED_PATH }, timeout: PROBE_TIMEOUT_MS });
     return true;
-  } catch { return false; }
-}
-
-async function isDaemonRunning() {
-  try {
-    await execAsync(`tailscale --socket ${TAILSCALE_SOCKET} status --json`, {
-      windowsHide: true,
-      env: { ...process.env, PATH: EXTENDED_PATH },
-      timeout: PROBE_TIMEOUT_MS
-    });
-    return true;
   } catch {
-    try {
-      await execAsync("pgrep -x tailscaled", { windowsHide: true, timeout: PROBE_TIMEOUT_MS });
-      return true;
-    } catch { return false; }
+    return false;
   }
 }
 
 export async function GET() {
+  if (isLocalOnlyBlocked()) return localOnlyResponse();
+
   try {
+    const { isTailscaleInstalled, isTailscaleLoggedIn, TAILSCALE_SOCKET } = await import("@/lib/tunnel/tailscale");
+
+    async function isDaemonRunning() {
+      try {
+        await execAsync(`tailscale --socket ${TAILSCALE_SOCKET} status --json`, {
+          windowsHide: true,
+          env: { ...process.env, PATH: EXTENDED_PATH },
+          timeout: PROBE_TIMEOUT_MS,
+        });
+        return true;
+      } catch {
+        try {
+          await execAsync("pgrep -x tailscaled", { windowsHide: true, timeout: PROBE_TIMEOUT_MS });
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    }
+
     const installed = isTailscaleInstalled();
     const platform = os.platform();
-    // Run independent probes in parallel — none blocks the event loop
     const [brewAvailable, daemonRunning] = await Promise.all([
       platform === "darwin" ? hasBrew() : Promise.resolve(false),
       installed ? isDaemonRunning() : Promise.resolve(false),

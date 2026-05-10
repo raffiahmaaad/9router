@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import { getSettings, updateSettings } from "@/lib/localDb";
-import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
-import { resetComboRotation } from "open-sse/services/combo.js";
 import bcrypt from "bcryptjs";
+import { isHostedMode } from "@/lib/runtimeMode";
+import { callCloudAdmin, cloudAdminErrorResponse } from "@/lib/hosted/cloudClient";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -13,20 +12,27 @@ const SETTINGS_RESPONSE_HEADERS = {
 
 export async function GET() {
   try {
+    if (isHostedMode()) {
+      const settings = await callCloudAdmin("/admin/settings", { method: "GET" });
+      return NextResponse.json(settings, { headers: SETTINGS_RESPONSE_HEADERS });
+    }
+
+    const { getSettings } = await import("@/lib/localDb");
     const settings = await getSettings();
     const { password, ...safeSettings } = settings;
-    
+
     const enableRequestLogs = process.env.ENABLE_REQUEST_LOGS === "true";
     const enableTranslator = process.env.ENABLE_TRANSLATOR === "true";
-    
-    return NextResponse.json({ 
-      ...safeSettings, 
+
+    return NextResponse.json({
+      ...safeSettings,
       enableRequestLogs,
       enableTranslator,
       hasPassword: !!password
     }, { headers: SETTINGS_RESPONSE_HEADERS });
   } catch (error) {
     console.log("Error getting settings:", error);
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
@@ -35,12 +41,24 @@ export async function PATCH(request) {
   try {
     const body = await request.json();
 
-    // If updating password, hash it
+    if (isHostedMode()) {
+      const settings = await callCloudAdmin("/admin/settings", {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      });
+      return NextResponse.json(settings, { headers: SETTINGS_RESPONSE_HEADERS });
+    }
+
+    const [{ getSettings, updateSettings }, { applyOutboundProxyEnv }, { resetComboRotation }] = await Promise.all([
+      import("@/lib/localDb"),
+      import("@/lib/network/outboundProxy"),
+      import("open-sse/services/combo.js"),
+    ]);
+
     if (body.newPassword) {
       const settings = await getSettings();
       const currentHash = settings.password;
 
-      // Verify current password if it exists
       if (currentHash) {
         if (!body.currentPassword) {
           return NextResponse.json({ error: "Current password required" }, { status: 400 });
@@ -50,8 +68,6 @@ export async function PATCH(request) {
           return NextResponse.json({ error: "Invalid current password" }, { status: 401 });
         }
       } else {
-        // First time setting password, no current password needed
-        // Allow empty currentPassword or default "123456"
         if (body.currentPassword && body.currentPassword !== "123456") {
            return NextResponse.json({ error: "Invalid current password" }, { status: 401 });
         }
@@ -65,7 +81,6 @@ export async function PATCH(request) {
 
     const settings = await updateSettings(body);
 
-    // Apply outbound proxy settings immediately (no restart required)
     if (
       Object.prototype.hasOwnProperty.call(body, "outboundProxyEnabled") ||
       Object.prototype.hasOwnProperty.call(body, "outboundProxyUrl") ||
@@ -74,7 +89,6 @@ export async function PATCH(request) {
       applyOutboundProxyEnv(settings);
     }
 
-    // Invalidate combo rotation state when strategy settings change
     if (
       Object.prototype.hasOwnProperty.call(body, "comboStrategy") ||
       Object.prototype.hasOwnProperty.call(body, "comboStickyRoundRobinLimit") ||
@@ -87,6 +101,7 @@ export async function PATCH(request) {
     return NextResponse.json(safeSettings, { headers: SETTINGS_RESPONSE_HEADERS });
   } catch (error) {
     console.log("Error updating settings:", error);
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

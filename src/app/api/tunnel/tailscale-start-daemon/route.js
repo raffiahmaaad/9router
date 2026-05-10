@@ -1,17 +1,21 @@
 "use server";
 
 import { NextResponse } from "next/server";
-import { startDaemonWithPassword } from "@/lib/tunnel/tailscale";
-import { getCachedPassword, loadEncryptedPassword, initDbHooks } from "@/mitm/manager";
-import { getSettings, updateSettings } from "@/lib/localDb";
-
-initDbHooks(getSettings, updateSettings);
+import { isLocalOnlyBlocked, localOnlyResponse } from "@/lib/localOnly";
 
 export async function POST(request) {
+  if (isLocalOnlyBlocked()) return localOnlyResponse();
+
   try {
+    const [{ startDaemonWithPassword }, manager, localDb] = await Promise.all([
+      import("@/lib/tunnel/tailscale"),
+      import("@/mitm/manager"),
+      import("@/lib/localDb"),
+    ]);
+    manager.initDbHooks(localDb.getSettings, localDb.updateSettings);
+
     const body = await request.json().catch(() => ({}));
-    // Use provided password, or fall back to cached/stored MITM password
-    const password = body.sudoPassword || getCachedPassword() || await loadEncryptedPassword() || "";
+    const password = body.sudoPassword || manager.getCachedPassword() || await manager.loadEncryptedPassword() || "";
     await startDaemonWithPassword(password);
     return NextResponse.json({ success: true });
   } catch (error) {

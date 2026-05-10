@@ -1,28 +1,36 @@
 "use server";
 
 import os from "os";
-import { execSync } from "child_process";
-import { installTailscale } from "@/lib/tunnel/tailscale";
-import { getCachedPassword, loadEncryptedPassword, initDbHooks } from "@/mitm/manager";
-import { getSettings, updateSettings } from "@/lib/localDb";
-import { loadState, generateShortId } from "@/lib/tunnel/state.js";
-
-initDbHooks(getSettings, updateSettings);
+import { execFileSync } from "child_process";
+import { isLocalOnlyBlocked, localOnlyResponse } from "@/lib/localOnly";
 
 const EXTENDED_PATH = `/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${process.env.PATH || ""}`;
 
 function hasBrew() {
-  try { execSync("which brew", { stdio: "ignore", windowsHide: true, env: { ...process.env, PATH: EXTENDED_PATH } }); return true; } catch { return false; }
+  try {
+    execFileSync("which", ["brew"], { stdio: "ignore", windowsHide: true, env: { ...process.env, PATH: EXTENDED_PATH } });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function POST(request) {
+  if (isLocalOnlyBlocked()) return localOnlyResponse();
+
+  const [{ installTailscale }, manager, state] = await Promise.all([
+    import("@/lib/tunnel/tailscale"),
+    import("@/mitm/manager"),
+    import("@/lib/tunnel/state.js"),
+  ]);
+
   const body = await request.json().catch(() => ({}));
   const platform = os.platform();
   const isWindows = platform === "win32";
   const isBrew = platform === "darwin" && hasBrew();
   const needsPassword = !isWindows && !isBrew;
 
-  const sudoPassword = body.sudoPassword || getCachedPassword() || await loadEncryptedPassword() || "";
+  const sudoPassword = body.sudoPassword || manager.getCachedPassword() || await manager.loadEncryptedPassword() || "";
 
   if (needsPassword && !sudoPassword.trim()) {
     return new Response(JSON.stringify({ error: "Sudo password is required" }), {
@@ -31,7 +39,7 @@ export async function POST(request) {
     });
   }
 
-  const shortId = loadState()?.shortId || generateShortId();
+  const shortId = state.loadState()?.shortId || state.generateShortId();
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({

@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
-import { getSettings } from "@/lib/localDb";
+import { isHostedMode } from "@/lib/runtimeMode";
+import { callCloudAdmin } from "@/lib/hosted/cloudClient";
 
 export async function GET() {
   try {
-    const settings = await getSettings();
+    const settings = isHostedMode()
+      ? await callCloudAdmin("/admin/settings", { method: "GET" })
+      : await (await import("@/lib/localDb")).getSettings();
     const requireLogin = settings.requireLogin !== false;
     const tunnelDashboardAccess = settings.tunnelDashboardAccess !== false;
     const tunnelUrl = settings.tunnelUrl || "";

@@ -1,8 +1,33 @@
 import { NextResponse } from "next/server";
-import {
-  getProviderConnections,
-  updateProviderConnection,
-} from "@/lib/localDb";
+import { isHostedMode } from "@/lib/runtimeMode";
+import { callCloudAdmin, cloudAdminErrorResponse } from "@/lib/hosted/cloudClient";
+
+async function getLocalDbModule() {
+  return import("@/lib/localDb");
+}
+
+async function getProviderConnections(filter) {
+  return (await getLocalDbModule()).getProviderConnections(filter);
+}
+
+async function updateProviderConnection(id, data) {
+  return (await getLocalDbModule()).updateProviderConnection(id, data);
+}
+
+async function getHostedProviderConnections() {
+  return (await callCloudAdmin("/admin/providers", { method: "GET" })).connections || [];
+}
+
+async function clearHostedModelCooldown(provider, model) {
+  return callCloudAdmin("/admin/models/availability", {
+    method: "POST",
+    body: JSON.stringify({ action: "clearCooldown", provider, model }),
+  });
+}
+
+async function getHostedAvailability() {
+  return callCloudAdmin("/admin/models/availability", { method: "GET" });
+}
 
 const MODEL_LOCK_PREFIX = "modelLock_";
 
@@ -21,6 +46,11 @@ function getActiveModelLocks(connection) {
 
 export async function GET() {
   try {
+    if (isHostedMode()) {
+      const data = await getHostedAvailability();
+      return NextResponse.json(data);
+    }
+
     const connections = await getProviderConnections();
     const models = [];
 
@@ -56,6 +86,7 @@ export async function GET() {
     });
   } catch (error) {
     console.error("[API] Failed to get model availability:", error);
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     return NextResponse.json(
       { error: "Failed to fetch model availability" },
       { status: 500 },
@@ -69,6 +100,11 @@ export async function POST(request) {
 
     if (action !== "clearCooldown" || !provider || !model) {
       return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+    }
+
+    if (isHostedMode()) {
+      await clearHostedModelCooldown(provider, model);
+      return NextResponse.json({ ok: true });
     }
 
     const connections = await getProviderConnections({ provider });
@@ -95,6 +131,7 @@ export async function POST(request) {
     return NextResponse.json({ ok: true });
   } catch (error) {
     console.error("[API] Failed to clear model cooldown:", error);
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     return NextResponse.json(
       { error: "Failed to clear cooldown" },
       { status: 500 },

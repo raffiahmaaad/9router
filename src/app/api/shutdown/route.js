@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
+import { isLocalOnlyBlocked, localOnlyResponse } from "@/lib/localOnly";
 
 export async function POST() {
+  if (isLocalOnlyBlocked()) return localOnlyResponse();
+
   if (process.env.NODE_ENV === "production") {
     return NextResponse.json({ success: false, message: "Not allowed in production" }, { status: 403 });
   }

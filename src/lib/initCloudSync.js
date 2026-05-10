@@ -1,13 +1,15 @@
-import initializeApp from "@/shared/services/initializeApp";
+import { isHostedMode } from "@/lib/runtimeMode";
 
 // Survive Next.js HMR — module-level flag resets on reload, globalThis persists
 const g = globalThis.__cloudSyncInit ??= { initialized: false, inProgress: null };
 
 export async function ensureAppInitialized() {
+  if (isHostedMode()) return true;
   if (g.initialized) return true;
   if (g.inProgress) return g.inProgress;
   g.inProgress = (async () => {
     try {
+      const { default: initializeApp } = await import("@/shared/services/initializeApp");
       await initializeApp();
       g.initialized = true;
     } catch (error) {
@@ -22,7 +24,7 @@ export async function ensureAppInitialized() {
 
 // Auto-initialize at runtime only, not during next build.
 // Defer to next tick so HTTP server can accept connections before heavy init runs.
-if (process.env.NEXT_PHASE !== "phase-production-build") {
+if (!isHostedMode() && process.env.NEXT_PHASE !== "phase-production-build") {
   setImmediate(() => {
     ensureAppInitialized().catch(console.log);
   });

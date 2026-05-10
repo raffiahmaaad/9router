@@ -1,27 +1,11 @@
 import { NextResponse } from "next/server";
-import {
-  getMitmStatus,
-  startServer,
-  stopServer,
-  enableToolDNS,
-  disableToolDNS,
-  trustCert,
-  getCachedPassword,
-  setCachedPassword,
-  loadEncryptedPassword,
-  isSudoPasswordRequired,
-  initDbHooks,
-} from "@/mitm/manager";
-import { getSettings, updateSettings } from "@/lib/localDb";
-
-initDbHooks(getSettings, updateSettings);
+import { isLocalOnlyBlocked, localOnlyResponse } from "@/lib/localOnly";
 
 const DEFAULT_MITM_ROUTER_BASE = "http://127.0.0.1:20128";
+const isWin = process.platform === "win32";
 
 function normalizeMitmRouterBaseUrlInput(input) {
-  if (input == null || String(input).trim() === "") {
-    return DEFAULT_MITM_ROUTER_BASE;
-  }
+  if (input == null || String(input).trim() === "") return DEFAULT_MITM_ROUTER_BASE;
   const t = String(input).trim().replace(/\/+$/, "");
   let u;
   try {
@@ -35,20 +19,28 @@ function normalizeMitmRouterBaseUrlInput(input) {
   return t;
 }
 
-const isWin = process.platform === "win32";
-
-function getPassword(provided) {
-  return provided || getCachedPassword() || null;
+async function loadMitmDeps() {
+  const [manager, localDb] = await Promise.all([
+    import("@/mitm/manager"),
+    import("@/lib/localDb"),
+  ]);
+  manager.initDbHooks(localDb.getSettings, localDb.updateSettings);
+  return { manager, localDb };
 }
 
-function requiresSudoPassword(pwd) {
-  return !isWin && !pwd && isSudoPasswordRequired();
+function getPassword(manager, provided) {
+  return provided || manager.getCachedPassword() || null;
 }
 
-function checkIsAdmin() {
+function requiresSudoPassword(manager, pwd) {
+  return !isWin && !pwd && manager.isSudoPasswordRequired();
+}
+
+async function checkIsAdmin() {
   if (isWin) {
     try {
-      require("child_process").execSync("net session >nul 2>&1", { windowsHide: true });
+      const { execFileSync } = await import("child_process");
+      execFileSync("net", ["session"], { stdio: "ignore", windowsHide: true });
       return true;
     } catch {
       return false;
@@ -57,19 +49,21 @@ function checkIsAdmin() {
   return typeof process.getuid === "function" && process.getuid() === 0;
 }
 
-function checkPrivilege(pwd) {
-  if (checkIsAdmin()) return true;
+async function checkPrivilege(manager, pwd) {
+  if (await checkIsAdmin()) return true;
   if (isWin) return false;
-  if (!isSudoPasswordRequired()) return true;
+  if (!manager.isSudoPasswordRequired()) return true;
   return !!pwd;
 }
 
-// GET - Full MITM status (server + per-tool DNS)
 export async function GET() {
+  if (isLocalOnlyBlocked()) return localOnlyResponse();
+
   try {
-    const status = await getMitmStatus();
-    const settings = await getSettings();
-    const hasCachedPassword = !!getCachedPassword() || !!(await loadEncryptedPassword());
+    const { manager, localDb } = await loadMitmDeps();
+    const status = await manager.getMitmStatus();
+    const settings = await localDb.getSettings();
+    const hasCachedPassword = !!manager.getCachedPassword() || !!(await manager.loadEncryptedPassword());
     return NextResponse.json({
       running: status.running,
       pid: status.pid || null,
@@ -78,8 +72,8 @@ export async function GET() {
       dnsStatus: status.dnsStatus || {},
       hasCachedPassword,
       isWin,
-      needsSudoPassword: !isWin && !hasCachedPassword && isSudoPasswordRequired(),
-      isAdmin: checkIsAdmin(),
+      needsSudoPassword: !isWin && !hasCachedPassword && manager.isSudoPasswordRequired(),
+      isAdmin: await checkIsAdmin(),
       mitmRouterBaseUrl:
         (settings.mitmRouterBaseUrl && String(settings.mitmRouterBaseUrl).trim()) ||
         DEFAULT_MITM_ROUTER_BASE,
@@ -90,20 +84,22 @@ export async function GET() {
   }
 }
 
-// POST - Start MITM server (cert + server, no DNS)
 export async function POST(request) {
-  try {
-    const { apiKey, sudoPassword, mitmRouterBaseUrl, forceKillPort443 } = await request.json();
-    const pwd = getPassword(sudoPassword) || await loadEncryptedPassword() || "";
+  if (isLocalOnlyBlocked()) return localOnlyResponse();
 
-    if (!apiKey || requiresSudoPassword(pwd)) {
+  try {
+    const { manager, localDb } = await loadMitmDeps();
+    const { apiKey, sudoPassword, mitmRouterBaseUrl, forceKillPort443 } = await request.json();
+    const pwd = getPassword(manager, sudoPassword) || await manager.loadEncryptedPassword() || "";
+
+    if (!apiKey || requiresSudoPassword(manager, pwd)) {
       return NextResponse.json(
         { error: !apiKey ? "Missing apiKey" : "Missing sudoPassword" },
         { status: 400 }
       );
     }
 
-    if (!checkPrivilege(pwd)) {
+    if (!(await checkPrivilege(manager, pwd))) {
       return NextResponse.json(
         { error: isWin ? "Administrator required — restart 9Router as Administrator" : "Root or sudo password required to start MITM" },
         { status: 403 }
@@ -113,17 +109,14 @@ export async function POST(request) {
     if (mitmRouterBaseUrl !== undefined && mitmRouterBaseUrl !== null) {
       try {
         const normalized = normalizeMitmRouterBaseUrlInput(mitmRouterBaseUrl);
-        await updateSettings({ mitmRouterBaseUrl: normalized });
+        await localDb.updateSettings({ mitmRouterBaseUrl: normalized });
       } catch (e) {
-        return NextResponse.json(
-          { error: e.message || "Invalid MITM router URL" },
-          { status: 400 },
-        );
+        return NextResponse.json({ error: e.message || "Invalid MITM router URL" }, { status: 400 });
       }
     }
 
-    const result = await startServer(apiKey, pwd, !!forceKillPort443);
-    if (!isWin) setCachedPassword(pwd);
+    const result = await manager.startServer(apiKey, pwd, !!forceKillPort443);
+    if (!isWin) manager.setCachedPassword(pwd);
 
     return NextResponse.json({ success: true, running: result.running, pid: result.pid });
   } catch (error) {
@@ -138,19 +131,21 @@ export async function POST(request) {
   }
 }
 
-// DELETE - Stop MITM server (removes all DNS first, then kills server)
 export async function DELETE(request) {
+  if (isLocalOnlyBlocked()) return localOnlyResponse();
+
   try {
+    const { manager } = await loadMitmDeps();
     const body = await request.json().catch(() => ({}));
     const { sudoPassword } = body;
-    const pwd = getPassword(sudoPassword) || await loadEncryptedPassword() || "";
+    const pwd = getPassword(manager, sudoPassword) || await manager.loadEncryptedPassword() || "";
 
-    if (requiresSudoPassword(pwd)) {
+    if (requiresSudoPassword(manager, pwd)) {
       return NextResponse.json({ error: "Missing sudoPassword" }, { status: 400 });
     }
 
-    await stopServer(pwd);
-    if (!isWin && sudoPassword) setCachedPassword(sudoPassword);
+    await manager.stopServer(pwd);
+    if (!isWin && sudoPassword) manager.setCachedPassword(sudoPassword);
 
     return NextResponse.json({ success: true, running: false });
   } catch (error) {
@@ -159,19 +154,21 @@ export async function DELETE(request) {
   }
 }
 
-// PATCH - Toggle DNS for a specific tool (enable/disable)
 export async function PATCH(request) {
+  if (isLocalOnlyBlocked()) return localOnlyResponse();
+
   try {
+    const { manager } = await loadMitmDeps();
     const { tool, action, sudoPassword } = await request.json();
-    const pwd = getPassword(sudoPassword) || await loadEncryptedPassword() || "";
+    const pwd = getPassword(manager, sudoPassword) || await manager.loadEncryptedPassword() || "";
 
     if (!tool || !action) {
       return NextResponse.json({ error: "tool and action required" }, { status: 400 });
     }
-    if (requiresSudoPassword(pwd)) {
+    if (requiresSudoPassword(manager, pwd)) {
       return NextResponse.json({ error: "Missing sudoPassword" }, { status: 400 });
     }
-    if (!checkPrivilege(pwd)) {
+    if (!(await checkPrivilege(manager, pwd))) {
       return NextResponse.json(
         { error: isWin ? "Administrator required — restart 9Router as Administrator" : "Root or sudo password required to modify DNS" },
         { status: 403 }
@@ -179,21 +176,21 @@ export async function PATCH(request) {
     }
 
     if (action === "enable") {
-      await enableToolDNS(tool, pwd);
+      await manager.enableToolDNS(tool, pwd);
     } else if (action === "disable") {
-      await disableToolDNS(tool, pwd);
+      await manager.disableToolDNS(tool, pwd);
     } else if (action === "trust-cert") {
-      await trustCert(pwd);
-      if (!isWin && sudoPassword) setCachedPassword(sudoPassword);
-      const status = await getMitmStatus();
+      await manager.trustCert(pwd);
+      if (!isWin && sudoPassword) manager.setCachedPassword(sudoPassword);
+      const status = await manager.getMitmStatus();
       return NextResponse.json({ success: true, certTrusted: status.certTrusted });
     } else {
       return NextResponse.json({ error: "action must be enable, disable, or trust-cert" }, { status: 400 });
     }
 
-    if (!isWin && sudoPassword) setCachedPassword(sudoPassword);
+    if (!isWin && sudoPassword) manager.setCachedPassword(sudoPassword);
 
-    const status = await getMitmStatus();
+    const status = await manager.getMitmStatus();
     return NextResponse.json({ success: true, dnsStatus: status.dnsStatus });
   } catch (error) {
     console.log("Error toggling DNS:", error.message);

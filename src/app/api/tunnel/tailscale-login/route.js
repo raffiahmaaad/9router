@@ -1,9 +1,14 @@
 import { NextResponse } from "next/server";
-import { startLogin } from "@/lib/tunnel/tailscale";
-import { loadState, generateShortId } from "@/lib/tunnel/state.js";
+import { isLocalOnlyBlocked, localOnlyResponse } from "@/lib/localOnly";
 
 export async function POST() {
+  if (isLocalOnlyBlocked()) return localOnlyResponse();
+
   try {
+    const [{ startLogin }, { loadState, generateShortId }] = await Promise.all([
+      import("@/lib/tunnel/tailscale"),
+      import("@/lib/tunnel/state.js"),
+    ]);
     const shortId = loadState()?.shortId || generateShortId();
     const result = await startLogin(shortId);
     return NextResponse.json(result);

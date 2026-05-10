@@ -1,9 +1,14 @@
 import { NextResponse } from "next/server";
-import { getTunnelStatus, getTailscaleStatus } from "@/lib/tunnel/tunnelManager";
-import { getDownloadStatus } from "@/lib/tunnel/cloudflared";
+import { isLocalOnlyBlocked, localOnlyResponse } from "@/lib/localOnly";
 
 export async function GET() {
+  if (isLocalOnlyBlocked()) return localOnlyResponse();
+
   try {
+    const [{ getTunnelStatus, getTailscaleStatus }, { getDownloadStatus }] = await Promise.all([
+      import("@/lib/tunnel/tunnelManager"),
+      import("@/lib/tunnel/cloudflared"),
+    ]);
     const [tunnel, tailscale] = await Promise.all([getTunnelStatus(), getTailscaleStatus()]);
     const download = getDownloadStatus();
     return NextResponse.json({ tunnel, tailscale, download });

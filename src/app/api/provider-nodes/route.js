@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import { createProviderNode, getProviderNodes } from "@/models";
 import { OPENAI_COMPATIBLE_PREFIX, ANTHROPIC_COMPATIBLE_PREFIX, CUSTOM_EMBEDDING_PREFIX } from "@/shared/constants/providers";
 import { generateId } from "@/shared/utils";
+import { isHostedMode } from "@/lib/runtimeMode";
+import { callCloudAdmin, cloudAdminErrorResponse } from "@/lib/hosted/cloudClient";
 
 export const dynamic = "force-dynamic";
 
@@ -20,10 +21,16 @@ const CUSTOM_EMBEDDING_DEFAULTS = {
 // GET /api/provider-nodes - List all provider nodes
 export async function GET() {
   try {
+    if (isHostedMode()) {
+      const data = await callCloudAdmin("/admin/provider-nodes", { method: "GET" });
+      return NextResponse.json(data);
+    }
+    const { getProviderNodes } = await import("@/models");
     const nodes = await getProviderNodes();
     return NextResponse.json({ nodes });
   } catch (error) {
     console.log("Error fetching provider nodes:", error);
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     return NextResponse.json({ error: "Failed to fetch provider nodes" }, { status: 500 });
   }
 }
@@ -50,14 +57,17 @@ export async function POST(request) {
         return NextResponse.json({ error: "Invalid OpenAI compatible API type" }, { status: 400 });
       }
 
-      const node = await createProviderNode({
+      const payload = {
         id: `${OPENAI_COMPATIBLE_PREFIX}${apiType}-${generateId()}`,
         type: "openai-compatible",
         prefix: prefix.trim(),
         apiType,
         baseUrl: (baseUrl || OPENAI_COMPATIBLE_DEFAULTS.baseUrl).trim(),
         name: name.trim(),
-      });
+      };
+      const node = isHostedMode()
+        ? (await callCloudAdmin("/admin/provider-nodes", { method: "POST", body: JSON.stringify(payload) })).node
+        : await (await import("@/models")).createProviderNode(payload);
       return NextResponse.json({ node }, { status: 201 });
     }
 
@@ -68,13 +78,16 @@ export async function POST(request) {
         sanitizedBaseUrl = sanitizedBaseUrl.slice(0, -"/embeddings".length);
       }
 
-      const node = await createProviderNode({
+      const payload = {
         id: `${CUSTOM_EMBEDDING_PREFIX}${generateId()}`,
         type: "custom-embedding",
         prefix: prefix.trim(),
         baseUrl: sanitizedBaseUrl,
         name: name.trim(),
-      });
+      };
+      const node = isHostedMode()
+        ? (await callCloudAdmin("/admin/provider-nodes", { method: "POST", body: JSON.stringify(payload) })).node
+        : await (await import("@/models")).createProviderNode(payload);
       return NextResponse.json({ node }, { status: 201 });
     }
 
@@ -86,19 +99,23 @@ export async function POST(request) {
         sanitizedBaseUrl = sanitizedBaseUrl.slice(0, -9); // remove /messages
       }
 
-      const node = await createProviderNode({
+      const payload = {
         id: `${ANTHROPIC_COMPATIBLE_PREFIX}${generateId()}`,
         type: "anthropic-compatible",
         prefix: prefix.trim(),
         baseUrl: sanitizedBaseUrl,
         name: name.trim(),
-      });
+      };
+      const node = isHostedMode()
+        ? (await callCloudAdmin("/admin/provider-nodes", { method: "POST", body: JSON.stringify(payload) })).node
+        : await (await import("@/models")).createProviderNode(payload);
       return NextResponse.json({ node }, { status: 201 });
     }
 
     return NextResponse.json({ error: "Invalid provider node type" }, { status: 400 });
   } catch (error) {
     console.log("Error creating provider node:", error);
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     return NextResponse.json({ error: "Failed to create provider node" }, { status: 500 });
   }
 }

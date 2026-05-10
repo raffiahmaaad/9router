@@ -1,11 +1,20 @@
 import { NextResponse } from "next/server";
-import { deleteProviderConnectionsByProvider, deleteProviderNode, getProviderConnections, getProviderNodeById, updateProviderConnection, updateProviderNode } from "@/models";
+import { isHostedMode } from "@/lib/runtimeMode";
+import { callCloudAdmin, cloudAdminErrorResponse } from "@/lib/hosted/cloudClient";
 
 // PUT /api/provider-nodes/[id] - Update provider node
 export async function PUT(request, { params }) {
   try {
     const { id } = await params;
     const body = await request.json();
+    if (isHostedMode()) {
+      const data = await callCloudAdmin(`/admin/provider-nodes/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(body),
+      });
+      return NextResponse.json(data);
+    }
+    const { deleteProviderConnectionsByProvider, deleteProviderNode, getProviderConnections, getProviderNodeById, updateProviderConnection, updateProviderNode } = await import("@/models");
     const { name, prefix, apiType, baseUrl } = body;
     const node = await getProviderNodeById(id);
 
@@ -76,14 +85,19 @@ export async function PUT(request, { params }) {
     return NextResponse.json({ node: updated });
   } catch (error) {
     console.log("Error updating provider node:", error);
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     return NextResponse.json({ error: "Failed to update provider node" }, { status: 500 });
   }
 }
 
-// DELETE /api/provider-nodes/[id] - Delete provider node and its connections
 export async function DELETE(request, { params }) {
   try {
     const { id } = await params;
+    if (isHostedMode()) {
+      const data = await callCloudAdmin(`/admin/provider-nodes/${id}`, { method: "DELETE" });
+      return NextResponse.json(data);
+    }
+    const { deleteProviderConnectionsByProvider, deleteProviderNode, getProviderNodeById } = await import("@/models");
     const node = await getProviderNodeById(id);
 
     if (!node) {
@@ -96,6 +110,7 @@ export async function DELETE(request, { params }) {
     return NextResponse.json({ success: true });
   } catch (error) {
     console.log("Error deleting provider node:", error);
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     return NextResponse.json({ error: "Failed to delete provider node" }, { status: 500 });
   }
 }

@@ -1,10 +1,46 @@
 import { NextResponse } from "next/server";
-import {
-  getProviderConnectionById,
-  getProxyPoolById,
-  updateProviderConnection,
-  deleteProviderConnection,
-} from "@/models";
+import { isHostedMode } from "@/lib/runtimeMode";
+import { callCloudAdmin, cloudAdminErrorResponse } from "@/lib/hosted/cloudClient";
+
+async function getModelsModule() {
+  return import("@/models");
+}
+
+async function getProviderConnectionById(id) {
+  return (await getModelsModule()).getProviderConnectionById(id);
+}
+
+async function getProxyPoolById(proxyPoolId) {
+  return (await getModelsModule()).getProxyPoolById(proxyPoolId);
+}
+
+async function updateProviderConnection(id, data) {
+  return (await getModelsModule()).updateProviderConnection(id, data);
+}
+
+async function deleteProviderConnection(id) {
+  return (await getModelsModule()).deleteProviderConnection(id);
+}
+
+async function getHostedProviderConnectionById(id) {
+  const data = await callCloudAdmin(`/admin/providers/${id}`, { method: "GET" });
+  return data.connection;
+}
+
+async function updateHostedProviderConnection(id, body) {
+  return (await callCloudAdmin(`/admin/providers/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  })).connection;
+}
+
+async function deleteHostedProviderConnection(id) {
+  return callCloudAdmin(`/admin/providers/${id}`, { method: "DELETE" });
+}
+
+async function getHostedProxyPoolById() {
+  return null;
+}
 
 function normalizeProxyConfig(body = {}) {
   const hasAnyProxyField =
@@ -47,7 +83,9 @@ async function normalizeProxyPoolUpdate(proxyPoolIdInput) {
     return { hasProxyPoolField: true, proxyPoolId: null };
   }
 
-  const proxyPool = await getProxyPoolById(proxyPoolId);
+  const proxyPool = isHostedMode()
+    ? await getHostedProxyPoolById(proxyPoolId)
+    : await getProxyPoolById(proxyPoolId);
   if (!proxyPool) {
     return { hasProxyPoolField: true, error: "Proxy pool not found" };
   }
@@ -63,7 +101,9 @@ function shouldMergeProviderSpecificData(existing, incoming, hasLegacyProxy, has
 export async function GET(request, { params }) {
   try {
     const { id } = await params;
-    const connection = await getProviderConnectionById(id);
+    const connection = isHostedMode()
+      ? await getHostedProviderConnectionById(id)
+      : await getProviderConnectionById(id);
 
     if (!connection) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
@@ -79,6 +119,7 @@ export async function GET(request, { params }) {
     return NextResponse.json({ connection: result });
   } catch (error) {
     console.log("Error fetching connection:", error);
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     return NextResponse.json({ error: "Failed to fetch connection" }, { status: 500 });
   }
 }
@@ -155,7 +196,9 @@ export async function PUT(request, { params }) {
       }
     }
 
-    const updated = await updateProviderConnection(id, updateData);
+    const updated = isHostedMode()
+      ? await updateHostedProviderConnection(id, updateData)
+      : await updateProviderConnection(id, updateData);
 
     // Hide sensitive fields
     const result = { ...updated };
@@ -167,6 +210,7 @@ export async function PUT(request, { params }) {
     return NextResponse.json({ connection: result });
   } catch (error) {
     console.log("Error updating connection:", error);
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     return NextResponse.json({ error: "Failed to update connection" }, { status: 500 });
   }
 }
@@ -176,6 +220,11 @@ export async function DELETE(request, { params }) {
   try {
     const { id } = await params;
 
+    if (isHostedMode()) {
+      const data = await deleteHostedProviderConnection(id);
+      return NextResponse.json(data);
+    }
+
     const deleted = await deleteProviderConnection(id);
     if (!deleted) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
@@ -184,6 +233,7 @@ export async function DELETE(request, { params }) {
     return NextResponse.json({ message: "Connection deleted successfully" });
   } catch (error) {
     console.log("Error deleting connection:", error);
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     return NextResponse.json({ error: "Failed to delete connection" }, { status: 500 });
   }
 }
