@@ -7,7 +7,9 @@ import {
   OPENAI_COMPATIBLE_PREFIX,
   ANTHROPIC_COMPATIBLE_PREFIX,
 } from "@/shared/constants/providers";
-import { testSingleConnection } from "../[id]/test/testUtils.js";
+import { isHostedMode } from "@/lib/runtimeMode";
+import { callCloudAdmin, cloudAdminErrorResponse } from "@/lib/hosted/cloudClient";
+import { testSingleConnection, testConnectionRecord } from "../[id]/test/testUtils.js";
 
 function getAuthGroup(providerId, connection = null) {
   // Prioritize authType from connection if available
@@ -39,6 +41,56 @@ function isCompatibleProvider(providerId) {
   );
 }
 
+async function getHostedActiveConnections() {
+  const data = await callCloudAdmin("/admin/providers", { method: "GET" });
+  return (data?.connections || []).filter((c) => c.isActive !== false);
+}
+
+async function testHostedConnectionById(id) {
+  const data = await callCloudAdmin(`/admin/providers/${id}?includeSecrets=1`, { method: "GET" });
+  const connection = data?.connection;
+  if (!connection) {
+    return { valid: false, error: "Connection not found", latencyMs: 0, testedAt: new Date().toISOString() };
+  }
+
+  const hasSecret = !!(connection.apiKey || connection.accessToken);
+  if (!hasSecret) {
+    return {
+      valid: false,
+      error: "Cloud worker returned no credentials. Redeploy the Cloudflare worker to enable hosted Test.",
+      latencyMs: 0,
+      testedAt: new Date().toISOString(),
+    };
+  }
+
+  const result = await testConnectionRecord(connection);
+
+  const updatePayload = {
+    testStatus: result.valid ? "active" : "error",
+    lastError: result.valid ? null : result.error,
+    lastErrorAt: result.valid ? null : new Date().toISOString(),
+  };
+
+  if (result.refreshed && result.newTokens) {
+    updatePayload.accessToken = result.newTokens.accessToken;
+    if (result.newTokens.refreshToken) updatePayload.refreshToken = result.newTokens.refreshToken;
+    if (result.newTokens.expiresIn) {
+      updatePayload.expiresAt = new Date(Date.now() + result.newTokens.expiresIn * 1000).toISOString();
+    }
+  }
+
+  try {
+    await callCloudAdmin(`/admin/providers/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(updatePayload),
+    });
+  } catch (err) {
+    console.log("Failed to persist hosted batch test result:", err?.message || err);
+  }
+
+  return result;
+}
+
 // POST /api/providers/test-batch - Test multiple connections by group
 export async function POST(request) {
   try {
@@ -49,7 +101,9 @@ export async function POST(request) {
       return NextResponse.json({ error: "mode is required" }, { status: 400 });
     }
 
-    const allConnections = await getProviderConnections({ isActive: true });
+    const allConnections = isHostedMode()
+      ? await getHostedActiveConnections()
+      : await getProviderConnections({ isActive: true });
 
     let connectionsToTest = [];
     if (mode === "provider" && providerId) {
@@ -84,7 +138,9 @@ export async function POST(request) {
     const results = [];
     for (const conn of connectionsToTest) {
       try {
-        const data = await testSingleConnection(conn.id);
+        const data = isHostedMode()
+          ? await testHostedConnectionById(conn.id)
+          : await testSingleConnection(conn.id);
         results.push({
           provider: conn.provider,
           connectionId: conn.id,
@@ -126,6 +182,7 @@ export async function POST(request) {
     });
   } catch (error) {
     console.log("Error in batch test:", error);
+    if (isHostedMode()) return cloudAdminErrorResponse(error);
     return NextResponse.json({ error: "Batch test failed" }, { status: 500 });
   }
 }

@@ -5,6 +5,35 @@ const PERIOD_MS = {
   "60d": 60 * 24 * 60 * 60 * 1000,
 };
 
+let pricingHelpers = null;
+async function getPricingHelpers() {
+  if (pricingHelpers) return pricingHelpers;
+  try {
+    const mod = await import("../../../src/shared/constants/pricing.js");
+    pricingHelpers = {
+      getPricingForModel: mod.getPricingForModel,
+      calculateCostFromTokens: mod.calculateCostFromTokens,
+    };
+  } catch {
+    pricingHelpers = {
+      getPricingForModel: () => null,
+      calculateCostFromTokens: () => 0,
+    };
+  }
+  return pricingHelpers;
+}
+
+async function computeCost(provider, model, tokens) {
+  try {
+    const { getPricingForModel, calculateCostFromTokens } = await getPricingHelpers();
+    const pricing = getPricingForModel(provider, model);
+    if (!pricing) return 0;
+    return calculateCostFromTokens(tokens || {}, pricing) || 0;
+  } catch {
+    return 0;
+  }
+}
+
 let usageEnv = null;
 let schemaReady = false;
 
@@ -139,13 +168,17 @@ function addCounter(target, key, values) {
   }
 }
 
-function aggregateRow(stats, row, connectionMap = {}, apiKeyMap = {}) {
+async function aggregateRow(stats, row, connectionMap = {}, apiKeyMap = {}) {
   const promptTokens = row.promptTokens || 0;
   const completionTokens = row.completionTokens || 0;
-  const cost = row.cost || 0;
   const provider = row.provider || "unknown";
   const model = row.model || "unknown";
   const lastUsed = row.timestamp;
+
+  let cost = row.cost || 0;
+  if (!cost && (promptTokens || completionTokens)) {
+    cost = await computeCost(provider, model, parseJson(row.tokens, { prompt_tokens: promptTokens, completion_tokens: completionTokens }));
+  }
 
   stats.totalRequests += 1;
   stats.totalPromptTokens += promptTokens;
@@ -211,6 +244,15 @@ export async function saveRequestUsage(entry = {}) {
   const tokens = entry.tokens || {};
   const { promptTokens, completionTokens } = getTokenCounts(tokens);
 
+  const provider = entry.provider || "unknown";
+  const model = entry.model || "unknown";
+
+  // Compute cost from pricing data when the caller did not supply it.
+  let cost = entry.cost;
+  if (cost == null || cost === 0) {
+    cost = await computeCost(provider, model, tokens);
+  }
+
   await env.DB.prepare(`
     INSERT INTO hosted_usage_history
       (id, timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens, meta)
@@ -218,14 +260,14 @@ export async function saveRequestUsage(entry = {}) {
   `).bind(
     crypto.randomUUID(),
     timestamp,
-    entry.provider || "unknown",
-    entry.model || "unknown",
+    provider,
+    model,
     entry.connectionId || null,
     entry.apiKey || null,
     entry.endpoint || null,
     promptTokens,
     completionTokens,
-    entry.cost || 0,
+    cost || 0,
     entry.status || "ok",
     jsonString(tokens),
     jsonString(entry.meta),
@@ -263,7 +305,9 @@ export async function getUsageStats(period = "7d", envOverride) {
 
   const [connectionMap, apiKeyMap] = await Promise.all([getConnectionMap(env), getApiKeyMap(env)]);
   const stats = createEmptyStats();
-  rows.forEach((row) => aggregateRow(stats, row, connectionMap, apiKeyMap));
+  for (const row of rows) {
+    await aggregateRow(stats, row, connectionMap, apiKeyMap);
+  }
 
   stats.recentRequests = [...rows]
     .reverse()
@@ -297,14 +341,22 @@ export async function getChartData(period = "7d", envOverride) {
     };
   });
 
-  const { results } = await env.DB.prepare("SELECT timestamp, promptTokens, completionTokens, cost FROM hosted_usage_history WHERE timestamp >= ?")
+  const { results } = await env.DB.prepare("SELECT timestamp, provider, model, promptTokens, completionTokens, cost, tokens FROM hosted_usage_history WHERE timestamp >= ?")
     .bind(new Date(start).toISOString())
     .all();
 
   for (const row of results || []) {
     const index = Math.min(Math.max(Math.floor((new Date(row.timestamp).getTime() - start) / bucketMs), 0), bucketCount - 1);
     buckets[index].tokens += (row.promptTokens || 0) + (row.completionTokens || 0);
-    buckets[index].cost += row.cost || 0;
+    let cost = row.cost || 0;
+    if (!cost && ((row.promptTokens || 0) || (row.completionTokens || 0))) {
+      cost = await computeCost(
+        row.provider || "unknown",
+        row.model || "unknown",
+        parseJson(row.tokens, { prompt_tokens: row.promptTokens || 0, completion_tokens: row.completionTokens || 0 }),
+      );
+    }
+    buckets[index].cost += cost;
   }
 
   return buckets;
