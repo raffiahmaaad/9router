@@ -434,7 +434,8 @@ export async function handleAdmin(request, env) {
     if (request.method === "GET") {
       const connection = await getJsonRow(env, "hosted_providers", id);
       if (!connection) return json({ error: "Connection not found" }, 404);
-      return json({ connection: stripProviderSecrets(connection) });
+      const includeSecrets = url.searchParams.get("includeSecrets") === "1";
+      return json({ connection: includeSecrets ? connection : stripProviderSecrets(connection) });
     }
     if (request.method === "PUT") {
       const existing = await getJsonRow(env, "hosted_providers", id);

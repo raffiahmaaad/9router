@@ -142,7 +142,9 @@ export async function PUT(request, { params }) {
       providerSpecificData
     } = body;
 
-    const existing = await getProviderConnectionById(id);
+    const existing = isHostedMode()
+      ? await getHostedProviderConnectionById(id)
+      : await getProviderConnectionById(id);
     if (!existing) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
     }
