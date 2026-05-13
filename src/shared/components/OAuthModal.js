@@ -10,6 +10,15 @@ import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
  * - Localhost: Auto callback via popup message
  * - Remote: Manual paste callback URL
  */
+// Format an OAuth state string into a short, readable pairing code like "XXXX-XXXX".
+function formatPairingCode(state) {
+  if (!state) return "";
+  // Strip non-alphanumerics so state separators do not leak into the display.
+  const clean = String(state).replace(/[^A-Z0-9]/gi, "").toUpperCase();
+  const core = clean.slice(0, 8) || "PAIR";
+  return `${core.slice(0, 4)}-${core.slice(4, 8)}`;
+}
+
 export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, onClose, oauthMeta, idcConfig }) {
   const [step, setStep] = useState("waiting"); // waiting | input | success | error
   const [authData, setAuthData] = useState(null);
@@ -475,17 +484,17 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         {(step === "waiting" || step === "input") && !isDeviceCode && (
           <>
             {authData?.codexIsDeviceMode ? (
-              /* Codex Device Pairing UX */
+              /* Codex Device Pairing UX — mirrors the Kilo Code device-code layout */
               <>
                 <div className="text-center py-2">
                   <p className="text-sm text-text-muted">
-                    Open the login URL on any device (phone, laptop, tablet) and authorize. Then paste the callback URL or code back here.
+                    Open the login URL on any device (phone, laptop, tablet) and authorize:
                   </p>
                 </div>
 
                 <div className="bg-sidebar p-4 rounded-lg">
-                  <p className="text-xs text-text-muted mb-2 uppercase tracking-wider">Login URL</p>
-                  <div className="flex items-start gap-2">
+                  <p className="text-xs text-text-muted mb-1">Login URL</p>
+                  <div className="flex items-center gap-2">
                     <code className="flex-1 text-sm break-all font-mono">{authData?.authUrl || ""}</code>
                     <Button
                       size="sm"
@@ -508,10 +517,10 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
                 {authData?.state && (
                   <div className="bg-primary/10 p-4 rounded-lg">
-                    <p className="text-xs text-text-muted mb-1 uppercase tracking-wider">Pairing Code</p>
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-lg font-mono font-bold text-primary break-all">
-                        {String(authData.state).slice(0, 16).toUpperCase()}
+                    <p className="text-xs text-text-muted mb-1 text-center">Pairing Code</p>
+                    <div className="flex items-center justify-center gap-2">
+                      <p className="text-2xl font-mono font-bold text-primary">
+                        {formatPairingCode(authData.state)}
                       </p>
                       <Button
                         size="sm"
@@ -520,13 +529,15 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
                         onClick={() => copy(authData.state, "state")}
                       />
                     </div>
-                    <p className="text-[11px] text-text-muted mt-1">
-                      Verify this matches the state parameter in the URL after login.
-                    </p>
                   </div>
                 )}
 
-                <div>
+                <div className="flex items-center justify-center gap-2 text-sm text-text-muted">
+                  <span className="material-symbols-outlined animate-spin text-base">progress_activity</span>
+                  Waiting for authorization...
+                </div>
+
+                <div className="mt-1">
                   <p className="text-sm font-medium mb-2">Paste the callback URL or authorization code</p>
                   <p className="text-xs text-text-muted mb-2">
                     After authorizing, the browser will redirect to a URL like <code>https://...?code=...&amp;state=...</code>. Copy the entire URL, or just the value of the <code>code</code> parameter.

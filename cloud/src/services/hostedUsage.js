@@ -33,7 +33,6 @@ async function computeCost(provider, model, tokens) {
     return 0;
   }
 }
-
 let usageEnv = null;
 let schemaReady = false;
 

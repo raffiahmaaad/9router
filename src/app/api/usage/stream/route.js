@@ -8,20 +8,46 @@ export async function GET() {
   const encoder = new TextEncoder();
 
   if (isHostedMode()) {
+    // Poll the cloud worker periodically and push updates over SSE so the
+    // dashboard reflects new requests in near real time.
+    const POLL_INTERVAL_MS = 4000;
+    const KEEPALIVE_MS = 25000;
+    const state = { closed: false, poll: null, keepalive: null };
+
     const stream = new ReadableStream({
       async start(controller) {
-        try {
-          const stats = await callCloudAdmin("/admin/usage/stats", { method: "GET" });
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(stats)}\n\n`));
-          controller.enqueue(encoder.encode(": ping\n\n"));
-        } catch {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({
-            pending: { byModel: {}, byAccount: {} },
-            activeRequests: [],
-            recentRequests: [],
-            errorProvider: "",
-          })}\n\n`));
-        }
+        let lastPayload = null;
+
+        const push = async () => {
+          if (state.closed) return;
+          try {
+            const stats = await callCloudAdmin("/admin/usage/stats", { method: "GET" });
+            const json = JSON.stringify(stats);
+            if (json !== lastPayload) {
+              lastPayload = json;
+              controller.enqueue(encoder.encode(`data: ${json}\n\n`));
+            }
+          } catch {
+            // keep connection alive even if one poll fails
+          }
+        };
+
+        await push();
+
+        state.poll = setInterval(() => { push(); }, POLL_INTERVAL_MS);
+        state.keepalive = setInterval(() => {
+          if (state.closed) return;
+          try {
+            controller.enqueue(encoder.encode(": ping\n\n"));
+          } catch {
+            state.closed = true;
+          }
+        }, KEEPALIVE_MS);
+      },
+      cancel() {
+        state.closed = true;
+        clearInterval(state.poll);
+        clearInterval(state.keepalive);
       },
     });
 

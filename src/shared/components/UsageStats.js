@@ -252,14 +252,27 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
     es.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data);
-        // Always merge only real-time fields, never overwrite full stats from REST
-        setStats((prev) => ({
-          ...(prev || {}),
-          activeRequests: data.activeRequests,
-          recentRequests: data.recentRequests,
-          errorProvider: data.errorProvider,
-          pending: data.pending,
-        }));
+        // Merge real-time fields; also refresh totals/breakdowns when the server
+        // includes them (hosted mode sends full stats so the dashboard updates live).
+        setStats((prev) => {
+          const next = { ...(prev || {}) };
+          if (data.activeRequests !== undefined) next.activeRequests = data.activeRequests;
+          if (data.recentRequests !== undefined) next.recentRequests = data.recentRequests;
+          if (data.errorProvider !== undefined) next.errorProvider = data.errorProvider;
+          if (data.pending !== undefined) next.pending = data.pending;
+          // Realtime totals + per-dimension breakdowns, when provided.
+          if (data.totalRequests !== undefined) next.totalRequests = data.totalRequests;
+          if (data.totalPromptTokens !== undefined) next.totalPromptTokens = data.totalPromptTokens;
+          if (data.totalCompletionTokens !== undefined) next.totalCompletionTokens = data.totalCompletionTokens;
+          if (data.totalCost !== undefined) next.totalCost = data.totalCost;
+          if (data.byProvider !== undefined) next.byProvider = data.byProvider;
+          if (data.byModel !== undefined) next.byModel = data.byModel;
+          if (data.byAccount !== undefined) next.byAccount = data.byAccount;
+          if (data.byApiKey !== undefined) next.byApiKey = data.byApiKey;
+          if (data.byEndpoint !== undefined) next.byEndpoint = data.byEndpoint;
+          if (data.last10Minutes !== undefined) next.last10Minutes = data.last10Minutes;
+          return next;
+        });
         setLoading(false);
       } catch (err) {
         console.error("[SSE CLIENT] parse error:", err);

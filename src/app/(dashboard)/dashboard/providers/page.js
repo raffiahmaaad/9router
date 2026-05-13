@@ -139,9 +139,17 @@ export default function ProvidersPage() {
   }, []);
 
   const getProviderStats = (providerId, authType) => {
-    const providerConnections = connections.filter(
-      (c) => c.provider === providerId && c.authType === authType,
-    );
+    // OAuth-category providers can also accept API key connections (e.g. kilocode),
+    // so count both authTypes under the OAuth tile.
+    const OAUTH_ALT_APIKEY = new Set(["kilocode"]);
+    const providerConnections = connections.filter((c) => {
+      if (c.provider !== providerId) return false;
+      if (c.authType === authType) return true;
+      if (authType === "oauth" && c.authType === "apikey" && OAUTH_ALT_APIKEY.has(providerId)) {
+        return true;
+      }
+      return false;
+    });
 
     const getEffectiveStatus = (conn) => {
       const isCooldown = Object.entries(conn).some(

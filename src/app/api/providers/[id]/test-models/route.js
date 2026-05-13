@@ -2,11 +2,23 @@ import { NextResponse } from "next/server";
 import { getProviderConnectionById, getApiKeys } from "@/lib/localDb";
 import { getProviderModels, PROVIDER_ID_TO_ALIAS } from "open-sse/config/providerModels.js";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
+import { isHostedMode } from "@/lib/runtimeMode";
+import { callCloudAdmin } from "@/lib/hosted/cloudClient";
 
 /**
  * Get an active API key to pass through auth when requireApiKey is enabled.
+ * In hosted mode, read from the cloud admin so the worker accepts the key.
  */
 async function getInternalApiKey() {
+  if (isHostedMode()) {
+    try {
+      const data = await callCloudAdmin("/admin/api-keys", { method: "GET" });
+      const keys = data?.keys || [];
+      return keys.find((k) => k.isActive !== false)?.key || null;
+    } catch {
+      return null;
+    }
+  }
   const keys = await getApiKeys();
   return keys.find((k) => k.isActive !== false)?.key || null;
 }
@@ -53,7 +65,9 @@ async function pingModel(modelId, baseUrl, apiKey) {
 export async function POST(request, { params }) {
   try {
     const { id } = await params;
-    const connection = await getProviderConnectionById(id);
+    const connection = isHostedMode()
+      ? (await callCloudAdmin(`/admin/providers/${id}`, { method: "GET" }).catch(() => null))?.connection || null
+      : await getProviderConnectionById(id);
     if (!connection) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
     }
