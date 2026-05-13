@@ -251,6 +251,15 @@ export async function POST(request) {
           isValid = openaiRes.ok;
           break;
 
+        case "kilocode": {
+          // Kilocode API tokens accepted by /api/profile
+          const res = await fetch("https://api.kilo.ai/api/profile", {
+            headers: { "Authorization": `Bearer ${apiKey}` },
+          });
+          isValid = res.ok;
+          break;
+        }
+
         case "anthropic":
           const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
             method: "POST",

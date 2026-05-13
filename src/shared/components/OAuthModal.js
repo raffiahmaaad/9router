@@ -18,6 +18,9 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const [isDeviceCode, setIsDeviceCode] = useState(false);
   const [deviceData, setDeviceData] = useState(null);
   const [polling, setPolling] = useState(false);
+  // Codex supports both browser-popup and device-pairing UX. Other OAuth providers use their default.
+  const supportsCodexDeviceMode = provider === "codex";
+  const [codexAuthMode, setCodexAuthMode] = useState("popup"); // popup | device
   const popupRef = useRef(null);
   const pollingAbortRef = useRef(false);
   const { copied, copy } = useCopyToClipboard();
@@ -173,7 +176,11 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       // Authorization code flow - build redirect URI (some providers require fixed ports locally)
       const appPort = window.location.port || (window.location.protocol === "https:" ? "443" : "80");
       const hostedRedirectUri = `${window.location.origin}/callback`;
-      const redirectUri = isLocalhost
+      // In Codex "device" mode, always use the hosted /callback path so the URL works from any browser.
+      const codexIsDeviceMode = provider === "codex" && codexAuthMode === "device";
+      const redirectUri = codexIsDeviceMode
+        ? hostedRedirectUri
+        : isLocalhost
         ? (provider === "codex" ? "http://localhost:1455/auth/callback" : `http://localhost:${appPort}/callback`)
         : hostedRedirectUri;
 
@@ -190,7 +197,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       // Codex: start proxy with server-side session (auto-exchange) + fallback to channels
       let codexProxyActive = false;
       let codexServerSide = false;
-      if (provider === "codex" && isLocalhost) {
+      if (provider === "codex" && isLocalhost && !codexIsDeviceMode) {
         try {
           const proxyUrl = new URL(`/api/oauth/codex/start-proxy`, window.location.origin);
           proxyUrl.searchParams.set("app_port", appPort);
@@ -206,9 +213,14 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         }
       }
 
-      setAuthData({ ...data, redirectUri, codexServerSide });
+      setAuthData({ ...data, redirectUri, codexServerSide, codexIsDeviceMode });
 
-      if (provider === "codex" && codexProxyActive) {
+      if (codexIsDeviceMode) {
+        // Device pairing mode: show the URL + code, do not open a popup, wait for manual paste.
+        setStep("input");
+        // Open in a new tab as convenience (user can still copy and open elsewhere).
+        window.open(data.authUrl, "_blank", "noopener,noreferrer");
+      } else if (provider === "codex" && codexProxyActive) {
         // Proxy active: callback will be handled server-side (auto-exchange) or via channels (fallback)
         setStep("waiting");
         popupRef.current = window.open(data.authUrl, "oauth_popup", "width=600,height=700");
@@ -231,7 +243,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       setError(err.message);
       setStep("error");
     }
-  }, [provider, isLocalhost, startPolling, oauthMeta, idcConfig]);
+  }, [provider, isLocalhost, startPolling, oauthMeta, idcConfig, codexAuthMode]);
 
   // Reset state and start OAuth when modal opens
   useEffect(() => {
@@ -381,17 +393,26 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const handleManualSubmit = async () => {
     try {
       setError(null);
-      const url = new URL(callbackUrl);
-      const code = url.searchParams.get("code");
-      const state = url.searchParams.get("state");
-      const errorParam = url.searchParams.get("error");
+      let code = null;
+      let state = null;
+      const trimmed = (callbackUrl || "").trim();
+      if (!trimmed) throw new Error("Paste the callback URL or authorization code");
 
-      if (errorParam) {
-        throw new Error(url.searchParams.get("error_description") || errorParam);
+      // Accept either a full callback URL or a bare code value.
+      if (/^https?:\/\//i.test(trimmed) || trimmed.includes("?")) {
+        const url = new URL(trimmed, window.location.origin);
+        code = url.searchParams.get("code");
+        state = url.searchParams.get("state");
+        const errorParam = url.searchParams.get("error");
+        if (errorParam) {
+          throw new Error(url.searchParams.get("error_description") || errorParam);
+        }
+      } else {
+        code = trimmed;
       }
 
       if (!code) {
-        throw new Error("No authorization code found in URL");
+        throw new Error("No authorization code found in input");
       }
 
       await exchangeTokens(code, state);
@@ -418,61 +439,172 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   return (
     <Modal isOpen={isOpen} title={`Connect ${providerInfo.name}`} onClose={handleClose} size="lg">
       <div className="flex flex-col gap-4">
+        {/* Codex auth-mode switcher (popup vs device pairing) */}
+        {supportsCodexDeviceMode && (step === "waiting" || step === "input") && !isDeviceCode && (
+          <div className="inline-flex p-1 rounded-lg bg-black/5 dark:bg-white/5">
+            {[
+              { id: "popup", label: "Browser Popup", icon: "open_in_browser" },
+              { id: "device", label: "Device Pairing", icon: "devices" },
+            ].map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => {
+                  if (codexAuthMode === option.id) return;
+                  setCodexAuthMode(option.id);
+                  // Re-start flow with new mode
+                  pollingAbortRef.current = true;
+                  callbackProcessedRef.current = false;
+                  setAuthData(null);
+                  setCallbackUrl("");
+                  setError(null);
+                }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+                  codexAuthMode === option.id
+                    ? "bg-white dark:bg-white/10 text-text-main shadow-sm"
+                    : "text-text-muted hover:text-text-main"
+                }`}
+              >
+                <span className="material-symbols-outlined text-[18px]">{option.icon}</span>
+                {option.label}
+              </button>
+            ))}
+          </div>
+        )}
         {/* Waiting + Manual Input combined (non-device-code) */}
         {(step === "waiting" || step === "input") && !isDeviceCode && (
           <>
-            {/* Option A: Auto via popup */}
-            <div className="flex items-center gap-2 px-3 py-2 border border-border rounded-lg bg-sidebar/50">
-              <span className="material-symbols-outlined text-base text-primary animate-spin">
-                progress_activity
-              </span>
-              <span className="text-sm">{waitingLabel}</span>
-            </div>
+            {authData?.codexIsDeviceMode ? (
+              /* Codex Device Pairing UX */
+              <>
+                <div className="text-center py-2">
+                  <p className="text-sm text-text-muted">
+                    Open the login URL on any device (phone, laptop, tablet) and authorize. Then paste the callback URL or code back here.
+                  </p>
+                </div>
 
-            {/* Divider */}
-            <div className="flex items-center gap-3 my-1">
-              <div className="flex-1 h-px bg-border" />
-              <span className="text-xs text-text-muted uppercase tracking-wider">Or paste callback URL manually</span>
-              <div className="flex-1 h-px bg-border" />
-            </div>
+                <div className="bg-sidebar p-4 rounded-lg">
+                  <p className="text-xs text-text-muted mb-2 uppercase tracking-wider">Login URL</p>
+                  <div className="flex items-start gap-2">
+                    <code className="flex-1 text-sm break-all font-mono">{authData?.authUrl || ""}</code>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      icon={copied === "auth_url" ? "check" : "content_copy"}
+                      onClick={() => copy(authData?.authUrl, "auth_url")}
+                      disabled={!authData?.authUrl}
+                    />
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      icon="open_in_new"
+                      onClick={() => window.open(authData?.authUrl, "_blank", "noopener,noreferrer")}
+                      disabled={!authData?.authUrl}
+                    >
+                      Open
+                    </Button>
+                  </div>
+                </div>
 
-            {/* Option B: Manual paste */}
-            <div className="space-y-4">
-              <div>
-                <p className="text-sm font-medium mb-2">Step 1: Open this URL in your browser</p>
+                {authData?.state && (
+                  <div className="bg-primary/10 p-4 rounded-lg">
+                    <p className="text-xs text-text-muted mb-1 uppercase tracking-wider">Pairing Code</p>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-lg font-mono font-bold text-primary break-all">
+                        {String(authData.state).slice(0, 16).toUpperCase()}
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        icon={copied === "state" ? "check" : "content_copy"}
+                        onClick={() => copy(authData.state, "state")}
+                      />
+                    </div>
+                    <p className="text-[11px] text-text-muted mt-1">
+                      Verify this matches the state parameter in the URL after login.
+                    </p>
+                  </div>
+                )}
+
+                <div>
+                  <p className="text-sm font-medium mb-2">Paste the callback URL or authorization code</p>
+                  <p className="text-xs text-text-muted mb-2">
+                    After authorizing, the browser will redirect to a URL like <code>https://...?code=...&amp;state=...</code>. Copy the entire URL, or just the value of the <code>code</code> parameter.
+                  </p>
+                  <Input
+                    value={callbackUrl}
+                    onChange={(e) => setCallbackUrl(e.target.value)}
+                    placeholder={placeholderUrl}
+                    className="font-mono text-xs"
+                  />
+                </div>
+
                 <div className="flex gap-2">
-                  <Input value={authData?.authUrl || ""} readOnly className="flex-1 font-mono text-xs" />
-                  <Button variant="secondary" icon="open_in_new" onClick={() => window.open(authData?.authUrl, "_blank", "noopener,noreferrer")} disabled={!authData?.authUrl}>
-                    Open
+                  <Button onClick={handleManualSubmit} fullWidth disabled={!callbackUrl}>
+                    Connect
                   </Button>
-                  <Button variant="secondary" icon={copied === "auth_url" ? "check" : "content_copy"} onClick={() => copy(authData?.authUrl, "auth_url")} disabled={!authData?.authUrl}>
-                    Copy
+                  <Button onClick={handleClose} variant="ghost" fullWidth>
+                    Cancel
                   </Button>
                 </div>
-              </div>
+              </>
+            ) : (
+              /* Default popup + manual paste UX */
+              <>
+                {/* Option A: Auto via popup */}
+                <div className="flex items-center gap-2 px-3 py-2 border border-border rounded-lg bg-sidebar/50">
+                  <span className="material-symbols-outlined text-base text-primary animate-spin">
+                    progress_activity
+                  </span>
+                  <span className="text-sm">{waitingLabel}</span>
+                </div>
 
-              <div>
-                <p className="text-sm font-medium mb-2">Step 2: Paste the callback URL here</p>
-                <p className="text-xs text-text-muted mb-2">
-                  After authorization, copy the full URL from your browser.
-                </p>
-                <Input
-                  value={callbackUrl}
-                  onChange={(e) => setCallbackUrl(e.target.value)}
-                  placeholder={placeholderUrl}
-                  className="font-mono text-xs"
-                />
-              </div>
-            </div>
+                {/* Divider */}
+                <div className="flex items-center gap-3 my-1">
+                  <div className="flex-1 h-px bg-border" />
+                  <span className="text-xs text-text-muted uppercase tracking-wider">Or paste callback URL manually</span>
+                  <div className="flex-1 h-px bg-border" />
+                </div>
 
-            <div className="flex gap-2">
-              <Button onClick={handleManualSubmit} fullWidth disabled={!callbackUrl}>
-                Connect
-              </Button>
-              <Button onClick={handleClose} variant="ghost" fullWidth>
-                Cancel
-              </Button>
-            </div>
+                {/* Option B: Manual paste */}
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-sm font-medium mb-2">Step 1: Open this URL in your browser</p>
+                    <div className="flex gap-2">
+                      <Input value={authData?.authUrl || ""} readOnly className="flex-1 font-mono text-xs" />
+                      <Button variant="secondary" icon="open_in_new" onClick={() => window.open(authData?.authUrl, "_blank", "noopener,noreferrer")} disabled={!authData?.authUrl}>
+                        Open
+                      </Button>
+                      <Button variant="secondary" icon={copied === "auth_url" ? "check" : "content_copy"} onClick={() => copy(authData?.authUrl, "auth_url")} disabled={!authData?.authUrl}>
+                        Copy
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-sm font-medium mb-2">Step 2: Paste the callback URL here</p>
+                    <p className="text-xs text-text-muted mb-2">
+                      After authorization, copy the full URL from your browser.
+                    </p>
+                    <Input
+                      value={callbackUrl}
+                      onChange={(e) => setCallbackUrl(e.target.value)}
+                      placeholder={placeholderUrl}
+                      className="font-mono text-xs"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex gap-2">
+                  <Button onClick={handleManualSubmit} fullWidth disabled={!callbackUrl}>
+                    Connect
+                  </Button>
+                  <Button onClick={handleClose} variant="ghost" fullWidth>
+                    Cancel
+                  </Button>
+                </div>
+              </>
+            )}
           </>
         )}
 

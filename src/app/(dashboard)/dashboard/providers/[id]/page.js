@@ -1050,6 +1050,20 @@ export default function ProviderDetailPage() {
                     Cookie
                   </Button>
                 )}
+                {!isCompatible && providerId === "kilocode" && (
+                  <Button
+                    size="sm"
+                    icon="key"
+                    variant="secondary"
+                    onClick={() => {
+                      setAddConnectionError("");
+                      setShowAddApiKeyModal(true);
+                    }}
+                    title="Add connection using a Kilo Code API key"
+                  >
+                    API Key
+                  </Button>
+                )}
                 <Button
                   size="sm"
                   icon="add"
@@ -1081,6 +1095,21 @@ export default function ProviderDetailPage() {
                       className="w-full sm:w-auto"
                     >
                       Cookie
+                    </Button>
+                  )}
+                  {providerId === "kilocode" && (
+                    <Button
+                      size="sm"
+                      icon="key"
+                      variant="secondary"
+                      onClick={() => {
+                        setAddConnectionError("");
+                        setShowAddApiKeyModal(true);
+                      }}
+                      title="Add connection using a Kilo Code API key"
+                      className="w-full sm:w-auto"
+                    >
+                      API Key
                     </Button>
                   )}
                   <Button

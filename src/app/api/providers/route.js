@@ -160,9 +160,13 @@ export async function POST(request) {
 
     // Validation
     const isWebCookieProvider = !!WEB_COOKIE_PROVIDERS[provider];
+    // OAuth providers that also accept a raw API key as an alternative auth method.
+    const OAUTH_APIKEY_ALLOWED = new Set(["kilocode"]);
+    const isOAuthApiKeyProvider = OAUTH_APIKEY_ALLOWED.has(provider);
     const isValidProvider = APIKEY_PROVIDERS[provider] ||
       FREE_TIER_PROVIDERS[provider] ||
       isWebCookieProvider ||
+      isOAuthApiKeyProvider ||
       isOpenAICompatibleProvider(provider) ||
       isAnthropicCompatibleProvider(provider) ||
       isCustomEmbeddingProvider(provider);
